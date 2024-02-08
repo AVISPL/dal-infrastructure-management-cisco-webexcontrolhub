@@ -1,0 +1,41 @@
+models:
+  - model:
+      name: Generic
+      vendor: WebEx
+      filter: get("id") != null
+      node: items
+      mapping:
+        type: "AV Devices"
+        category: at("/type")?.asText()
+        serialNumber: at("/serial")?.asText()
+        deviceId: at("/id")?.asText()
+        deviceName: at("/displayName")?.asText()
+        deviceMake: at("/managedBy")?.asText()
+        deviceModel: at("/product")?.asText()
+        deviceOnline: at("/connectionStatus")?.asText().equals("disconnected") != true
+      properties:
+        #PlaceID: at("/placeId")?.asText()
+        #OrganizationID: at("/orgId")?.asText()
+        #WorkspaceLocationID: at("/workspaceLocationId")?.asText()
+        #LocationID: at("/locationId")?.asText()
+        #WorkspaceID: at("/workspaceId")?.asText()
+        Network#IPAddress: at("/ip")?.asText()
+        Network#SIPUrl: at("/primarySipUrl")?.asText()
+        System#MACAddress: at("/mac")?.asText()
+        System#Software: at("/software")?.asText()
+        Created: at("/created")?.asText()
+        FirstSeen: at("/firstSeen")?.asText()
+        LastSeen: at("/lastSeen")?.asText()
+        APICapabilities: at("/capabilities")?.toString().replaceAll("[^\\.,A-Za-z0-9()\\[\\]]", "")
+        APIPermissions: at("/permissions")?.toString().replaceAll("[^\\.,A-Za-z0-9()\\[\\]]", "")
+        DeviceTags#RemoveAll: at("/tags")
+        DeviceTags#AddTag: "Enter Tag Name"
+      control:
+        DeviceTags#RemoveAll:
+          type: Button
+          gracePeriod: 0
+          label: Remove
+          labelPressed: Removing
+        DeviceTags#AddTag:
+          type: Text
+          value: ""
