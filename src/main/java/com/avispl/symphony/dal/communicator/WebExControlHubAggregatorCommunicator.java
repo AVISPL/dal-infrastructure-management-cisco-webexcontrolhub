@@ -18,6 +18,7 @@ import com.avispl.symphony.dal.aggregator.parser.PropertiesMappingParser;
 import com.avispl.symphony.dal.communicator.data.AuthorizationResponse;
 import com.avispl.symphony.dal.util.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
+import org.apache.commons.lang3.BooleanUtils;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.util.CollectionUtils;
@@ -30,6 +31,7 @@ import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 import static com.avispl.symphony.dal.util.ControllablePropertyFactory.*;
@@ -132,8 +134,18 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                         if (includeConfigurationUpdates || includeStatusUpdates) {
                             devicesExecutionPool.add(executorService.submit(() -> {
                                 try {
-                                    retrieveDeviceStatus(aggregatedDevice);
-                                    generateDeviceConfigurationProperties(aggregatedDevice);
+                                    deviceIntegrityLock.lock();
+                                    try {
+                                        retrieveDeviceStatus(aggregatedDevice);
+                                    } finally {
+                                        deviceIntegrityLock.unlock();
+                                    }
+                                    deviceIntegrityLock.lock();
+                                    try {
+                                        generateDeviceConfigurationProperties(aggregatedDevice);
+                                    } finally {
+                                        deviceIntegrityLock.unlock();
+                                    }
                                     cleanupActiveErrors();
                                 } catch (Exception e) {
                                     logger.error(String.format("Exception during WebEx device '%s' data processing.", aggregatedDevice.getDeviceName()), e);
@@ -319,11 +331,21 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     private String accessToken;
     private long adapterInitializationTimestamp;
 
+    private AggregatedDeviceProcessor aggregatedDeviceProcessor;
+
     private AuthorizationMode authorizationMode = AuthorizationMode.INTEGRATION;
     private PingMode pingMode = PingMode.ICMP;
-    private boolean enableDeviceConfiguration = false;
-    private AggregatedDeviceProcessor aggregatedDeviceProcessor;
+
+    /**
+     * Adapter metadate properties, contain information about build version and build date
+     * */
     private Properties adapterProperties;
+
+    /**
+     * Lock to suspend device data delivery if the device properties update is in progress.
+     * This would help to avoid sudden properties cleanup.
+     * */
+    private ReentrantLock deviceIntegrityLock = new ReentrantLock();
 
     /**
      * Aggregated devices cache
@@ -555,24 +577,6 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     }
 
     /**
-     * Retrieves {@link #enableDeviceConfiguration}
-     *
-     * @return value of {@link #enableDeviceConfiguration}
-     */
-    public boolean isEnableDeviceConfiguration() {
-        return enableDeviceConfiguration;
-    }
-
-    /**
-     * Sets {@link #enableDeviceConfiguration} value
-     *
-     * @param enableDeviceConfiguration new value of {@link #enableDeviceConfiguration}
-     */
-    public void setEnableDeviceConfiguration(boolean enableDeviceConfiguration) {
-        this.enableDeviceConfiguration = enableDeviceConfiguration;
-    }
-
-    /**
      * Retrieves {@link #refreshToken}
      *
      * @return value of {@link #refreshToken}
@@ -740,15 +744,20 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
 
     @Override
     public List<AggregatedDevice> retrieveMultipleStatistics() throws FailedLoginException {
-        if (lastErrorCode != 0) {
-            if (lastErrorCode == 401 || lastErrorCode == 403) {
-                throw new FailedLoginException("Failed login while retrieving devices list: " + lastErrorMessage);
-            } else {
-                throw new RuntimeException(String.format("[%s]Unable retrieve devices list: %s", lastErrorCode, lastErrorMessage));
+        deviceIntegrityLock.lock();
+        try {
+            if (lastErrorCode != 0) {
+                if (lastErrorCode == 401 || lastErrorCode == 403) {
+                    throw new FailedLoginException("Failed login while retrieving devices list: " + lastErrorMessage);
+                } else {
+                    throw new RuntimeException(String.format("[%s]Unable retrieve devices list: %s", lastErrorCode, lastErrorMessage));
+                }
             }
+            updateValidRetrieveStatisticsTimestamp();
+            aggregatedDevices.values().forEach(aggregatedDevice -> aggregatedDevice.setTimestamp(System.currentTimeMillis()));
+        } finally {
+            deviceIntegrityLock.unlock();
         }
-        updateValidRetrieveStatisticsTimestamp();
-        aggregatedDevices.values().forEach(aggregatedDevice -> aggregatedDevice.setTimestamp(System.currentTimeMillis()));
         return new ArrayList<>(aggregatedDevices.values());
     }
 
@@ -1054,7 +1063,11 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
      * @throws Exception if any error occurs
      * */
     private void generateDeviceConfigurationProperties(AggregatedDevice aggregatedDevice) throws Exception {
+        Map<String, String> deviceProperties = aggregatedDevice.getProperties();
         if (!includeConfigurationUpdates) {
+            if (deviceProperties != null && !deviceProperties.isEmpty()) {
+                deviceProperties.keySet().removeIf(s -> s.contains("Configuration#"));
+            }
             return;
         }
         long currentTimestamp = System.currentTimeMillis();
@@ -1076,53 +1089,60 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         List<AdvancedControllableProperty> advancedControllableProperties = new ArrayList<>(tagControls);
         aggregatedDevice.setControllableProperties(advancedControllableProperties);
 
-        JsonNode response = doGet(Constants.URL.DEVICE_CONFIGURATIONS + deviceId, JsonNode.class);
-        JsonNode array = response.at(Constants.Paths.ITEMS);
-        array.fieldNames().forEachRemaining(configPropertyName -> {
-            JsonNode configValues = array.get(configPropertyName);
-            String source = configValues.at(Constants.Paths.SOURCE).asText();
-            String value = configValues.at(String.format(Constants.Paths.SOURCES, source)).asText();
-            String symphonyConfigPropertyName = "";
-            if (configPropertyName.contains("[")) {
-                String[] nameElements = configPropertyName.split("\\.");
-                String name = "";
-                for (int i = 0; i < nameElements.length; i++) {
-                    name += nameElements[i];
-                    int nextElement = i+1;
-                    if (!name.contains("#") && nameElements.length > nextElement && nameElements[nextElement].contains("[")) {
-                        name += "Configuration#";
-                    } else if (!name.contains("#") && i == 0 && name.contains("[")) {
-                        name = name.split("\\[")[0] + "Configuration#" + name;
+        try {
+            if (deviceProperties != null && !deviceProperties.isEmpty()) {
+                deviceProperties.keySet().removeIf(s -> s.contains("Configuration#"));
+            }
+            JsonNode response = doGet(Constants.URL.DEVICE_CONFIGURATIONS + deviceId, JsonNode.class);
+            JsonNode array = response.at(Constants.Paths.ITEMS);
+            array.fieldNames().forEachRemaining(configPropertyName -> {
+                JsonNode configValues = array.get(configPropertyName);
+                String source = configValues.at(Constants.Paths.SOURCE).asText();
+                String value = configValues.at(String.format(Constants.Paths.SOURCES, source)).asText();
+                String symphonyConfigPropertyName = "";
+                if (configPropertyName.contains("[")) {
+                    String[] nameElements = configPropertyName.split("\\.");
+                    String name = "";
+                    for (int i = 0; i < nameElements.length; i++) {
+                        name += nameElements[i];
+                        int nextElement = i + 1;
+                        if (!name.contains("#") && nameElements.length > nextElement && nameElements[nextElement].contains("[")) {
+                            name += "Configuration#";
+                        } else if (!name.contains("#") && i == 0 && name.contains("[")) {
+                            name = name.split("\\[")[0] + "Configuration#" + name;
+                        }
                     }
+                    symphonyConfigPropertyName = name;
+                } else {
+                    symphonyConfigPropertyName = configPropertyName.replaceFirst("\\.", "Configuration#").replaceAll("\\.", "");
                 }
-                symphonyConfigPropertyName = name;
-            } else {
-                symphonyConfigPropertyName = configPropertyName.replaceFirst("\\.", "Configuration#").replaceAll("\\.", "");
-            }
 
-            controllablePropertiesToConfigurationNames.put(symphonyConfigPropertyName, configPropertyName);
+                controllablePropertiesToConfigurationNames.put(symphonyConfigPropertyName, configPropertyName);
 
-            if (includePropertyGroups.contains(symphonyConfigPropertyName.split("#")[0])) {
-                availablePropertyGroups.add(symphonyConfigPropertyName.split("#")[0]);
-            } else {
-                availablePropertyGroups.add(symphonyConfigPropertyName.split("#")[0]);
-                return;
-            }
-            JsonNode valueSpace = configValues.at(Constants.Paths.VALUESPACE);
-            String configType = valueSpace.at(Constants.Paths.TYPE).asText();
-            if (Constants.Paths.DataType.STRING.equals(configType) && !valueSpace.at(Constants.Paths.ENUM).isMissingNode()) {
-                List<String> dropdownValues = new ArrayList<>();
-                valueSpace.at(Constants.Paths.ENUM).elements().forEachRemaining(item -> dropdownValues.add(item.asText()));
-                advancedControllableProperties.add(createDropdown(symphonyConfigPropertyName, dropdownValues, value));
-            } else if (Constants.Paths.DataType.INTEGER.equals(configType)) {
-                String min = valueSpace.at(Constants.Paths.MIN).asText();
-                String max = valueSpace.at(Constants.Paths.MAX).asText();
-                advancedControllableProperties.add(createSlider(symphonyConfigPropertyName, Float.parseFloat(min), Float.parseFloat(max), Float.parseFloat(value)));
-            } else if (Constants.Paths.DataType.STRING.equals(configType)) {
-                advancedControllableProperties.add(createText(symphonyConfigPropertyName, value));
-            }
-            properties.put(symphonyConfigPropertyName, value);
-        });
+                if (includePropertyGroups.contains(symphonyConfigPropertyName.split("#")[0])) {
+                    availablePropertyGroups.add(symphonyConfigPropertyName.split("#")[0]);
+                } else {
+                    availablePropertyGroups.add(symphonyConfigPropertyName.split("#")[0]);
+                    return;
+                }
+                JsonNode valueSpace = configValues.at(Constants.Paths.VALUESPACE);
+                String configType = valueSpace.at(Constants.Paths.TYPE).asText();
+                if (Constants.Paths.DataType.STRING.equals(configType) && !valueSpace.at(Constants.Paths.ENUM).isMissingNode()) {
+                    List<String> dropdownValues = new ArrayList<>();
+                    valueSpace.at(Constants.Paths.ENUM).elements().forEachRemaining(item -> dropdownValues.add(item.asText()));
+                    advancedControllableProperties.add(createDropdown(symphonyConfigPropertyName, dropdownValues, value));
+                } else if (Constants.Paths.DataType.INTEGER.equals(configType)) {
+                    String min = valueSpace.at(Constants.Paths.MIN).asText();
+                    String max = valueSpace.at(Constants.Paths.MAX).asText();
+                    advancedControllableProperties.add(createSlider(symphonyConfigPropertyName, Float.parseFloat(min), Float.parseFloat(max), Float.parseFloat(value)));
+                } else if (Constants.Paths.DataType.STRING.equals(configType)) {
+                    advancedControllableProperties.add(createText(symphonyConfigPropertyName, value));
+                }
+                properties.put(symphonyConfigPropertyName, value);
+            });
+        } catch (Exception ex) {
+            logger.warn("Unable to retrieve WebEx Configuration details for device " + deviceId, ex);
+        }
     }
 
     /**
@@ -1188,10 +1208,13 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
      * And maps it to the list of properties in Symphony, using parent node as a Group name.
      *
      * @param aggregatedDevice device to generate status properties for
-     * @throws Exception if any error occurs
      * */
-    private void retrieveDeviceStatus(AggregatedDevice aggregatedDevice) throws Exception {
+    private void retrieveDeviceStatus(AggregatedDevice aggregatedDevice) {
+        Map<String, String> deviceProperties = aggregatedDevice.getProperties();
         if (!includeStatusUpdates) {
+            if (deviceProperties != null && !deviceProperties.isEmpty()) {
+                deviceProperties.keySet().removeIf(s -> s.contains("Status#"));
+            }
             return;
         }
         long currentTimestamp = System.currentTimeMillis();
@@ -1205,18 +1228,22 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         }
         validDeviceStatusRetrievalPeriodTimestamps.put(deviceId, currentTimestamp + deviceStatusRetrievalTimeout);
 
-        Map<String, String> deviceProperties = aggregatedDevice.getProperties();
+        deviceProperties.keySet().removeIf(name -> name.contains("Status#"));
         if (!deviceProperties.containsKey("APICapabilities") || !deviceProperties.containsKey("APIPermissions") ||
-        !deviceProperties.get("APICapabilities").contains("xapi") || !deviceProperties.get("APIPermissions").contains("xapi")) {
+        !deviceProperties.get("APICapabilities").contains("xapi") || !deviceProperties.get("APIPermissions").contains("xapi")
+        || BooleanUtils.isFalse(aggregatedDevice.getDeviceOnline())) {
             logDebugMessage(String.format("Device %s does not support or has permissions for xapi use. Skipping statistics retrieval.", deviceId));
             return;
         }
-        JsonNode jsonNode = doGet(String.format(Constants.URL.XAPI_STATUS, deviceId), JsonNode.class);
-
-        Map<String, String> properties = new HashMap<>();
-        JsonNode elements = jsonNode.at(Constants.Paths.RESULT);
-        collectStatusProperties(elements, properties, "");
-        deviceProperties.putAll(properties);
+        try {
+            JsonNode jsonNode = doGet(String.format(Constants.URL.XAPI_STATUS, deviceId), JsonNode.class);
+            Map<String, String> properties = new HashMap<>();
+            JsonNode elements = jsonNode.at(Constants.Paths.RESULT);
+            collectStatusProperties(elements, properties, "");
+            deviceProperties.putAll(properties);
+        } catch (Exception ex) {
+            logger.warn("Unable to retrieve xAPI status of device " + deviceId, ex);
+        }
     }
 
     /**
