@@ -25,6 +25,12 @@ public enum AuthorizationMode {
         this.mode = mode;
     }
 
+    /**
+     * Retrieve {@link AuthorizationMode} instance based on the text value of the mode
+     *
+     * @param mode name of the mode to retrieve
+     * @return instance of {@link AuthorizationMode}
+     * */
     public static AuthorizationMode ofString(String mode) {
         if (logger.isDebugEnabled()) {
             logger.debug("Requested authorization mode: " + mode);

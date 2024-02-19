@@ -695,6 +695,15 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         }
     }
 
+    /**
+     * Push device configuration change to WebEx API
+     *
+     * @param deviceId ID of the device to update configuration for
+     * @param propertyName name of the property to change
+     * @param value new value of the configuration property
+     *
+     * @throws Exception if any error occurs
+     * */
     private void updateDeviceConfiguration(String deviceId, String propertyName, Object value) throws Exception {
         String configName = controllablePropertiesToConfigurationNames.get(propertyName);
 

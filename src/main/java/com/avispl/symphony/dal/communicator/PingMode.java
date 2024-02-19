@@ -25,6 +25,12 @@ public enum PingMode {
         this.mode = mode;
     }
 
+    /**
+     * Retrieve {@link PingMode} instance based on the text value of the mode
+     *
+     * @param mode name of the mode to retrieve
+     * @return instance of {@link PingMode}
+     * */
     public static PingMode ofString(String mode) {
         if (logger.isDebugEnabled()) {
             logger.debug("Requested PING mode: " + mode);
