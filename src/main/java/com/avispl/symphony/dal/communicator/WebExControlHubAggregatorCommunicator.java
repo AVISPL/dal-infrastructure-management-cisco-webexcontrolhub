@@ -92,8 +92,6 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                     try {
                         logDebugMessage("Fetching devices list.");
                         fetchDevicesList();
-                        logDebugMessage("Fetched devices list: " + aggregatedDevices);
-                        cleanupActiveErrors();
                     } catch (Exception e) {
                         logger.error("Error occurred during device list retrieval: " + e.getMessage() + " with cause: " + e.getCause().getMessage(), e);
                         if (e instanceof CommandFailureException) {
@@ -848,6 +846,8 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                 existingAggregatedDevice.setTimestamp(System.currentTimeMillis());
             }
         }
+        logDebugMessage("Fetched devices list: " + aggregatedDevices);
+        cleanupActiveErrors();
     }
 
     @Override
