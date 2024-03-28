@@ -139,6 +139,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                                     } finally {
                                         deviceIntegrityLock.unlock();
                                     }
+                                    deviceIntegrityLock.lock();
                                     try {
                                         retrieveDeviceStatus(aggregatedDevice);
                                     } finally {
