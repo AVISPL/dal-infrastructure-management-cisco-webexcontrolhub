@@ -3,6 +3,9 @@
  */
 package com.avispl.symphony.dal.communicator;
 
+import java.util.Arrays;
+import java.util.List;
+
 /**
  * Adapter constants storage
  * @author Maksym Rossiitsev
@@ -17,6 +20,7 @@ public interface Constants {
      * */
     interface URL {
         String DEVICES_URL = "devices";
+        String DEVICE_URL = "devices/";
         String ACCESS_TOKEN_URL = "access_token";
         String DEVICE_CONFIGURATIONS = "deviceConfigurations?deviceId=";
 
@@ -85,6 +89,15 @@ public interface Constants {
         String MIN = "/minimum";
         String MAX = "/maximum";
         String RESULT = "/result";
+    }
+
+    /**
+     * State constants to match online statuses, call statuses etc
+     * @author Maksym.Rossiytsev
+     * @since 1.0.0
+     * */
+    interface States {
+        List<String> ONLINE_STATUS = Arrays.asList("connected", "connected_with_issues", "activating");
     }
 
 }

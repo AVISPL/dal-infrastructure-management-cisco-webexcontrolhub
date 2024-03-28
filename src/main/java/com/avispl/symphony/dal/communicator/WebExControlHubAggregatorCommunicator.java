@@ -34,6 +34,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
+import static com.avispl.symphony.dal.communicator.Constants.States.ONLINE_STATUS;
 import static com.avispl.symphony.dal.util.ControllablePropertyFactory.*;
 import static java.util.stream.Collectors.toList;
 
@@ -133,6 +134,11 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                             devicesExecutionPool.add(executorService.submit(() -> {
                                 try {
                                     deviceIntegrityLock.lock();
+                                    try {
+                                        checkDeviceState(aggregatedDevice);
+                                    } finally {
+                                        deviceIntegrityLock.unlock();
+                                    }
                                     try {
                                         retrieveDeviceStatus(aggregatedDevice);
                                     } finally {
@@ -830,12 +836,6 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         List<AggregatedDevice> aggregatedDevicesList = listWebExDevices();
         for(AggregatedDevice aggregatedDevice: aggregatedDevicesList) {
             String deviceId = aggregatedDevice.getDeviceId();
-            Map<String, String> properties = aggregatedDevice.getProperties();
-            List<String> deviceTags = Arrays.stream(properties.get(Constants.PropertyNames.REMOVE_TAG)
-                    .replaceAll("\\[", "").replaceAll("]", "")
-                    .replaceAll("\"", "").split(",")).map(String::trim)
-                    .filter(StringUtils::isNotNullOrEmpty).collect(toList());
-            properties.put(Constants.PropertyNames.TAGS, String.join(", ", deviceTags));
             if (!aggregatedDevices.containsKey(deviceId)) {
                 aggregatedDevices.put(deviceId, aggregatedDevice);
             } else {
@@ -1152,6 +1152,22 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         } catch (Exception ex) {
             logger.warn("Unable to retrieve WebEx Configuration details for device " + deviceId, ex);
         }
+    }
+
+    /**
+     * Check device's status and set online status based on that
+     *
+     * @param aggregatedDevice to check status for
+     * @throws Exception if any error occurs
+     * */
+    private void checkDeviceState(AggregatedDevice aggregatedDevice) throws Exception {
+        String deviceId = aggregatedDevice.getDeviceId();
+        JsonNode deviceData = doGet(Constants.URL.DEVICE_URL + deviceId, JsonNode.class);
+
+        Map<String, String> deviceProperties = new HashMap<>();
+        aggregatedDeviceProcessor.applyProperties(deviceProperties, deviceData, "Single");
+        aggregatedDevice.setDeviceOnline(ONLINE_STATUS.contains(deviceProperties.get("ConnectionStatus")));
+        aggregatedDevice.getProperties().putAll(deviceProperties);
     }
 
     /**
