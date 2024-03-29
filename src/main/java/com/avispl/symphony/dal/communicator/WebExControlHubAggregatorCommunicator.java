@@ -1346,6 +1346,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             if (deviceProperties != null && !deviceProperties.isEmpty()) {
                 deviceProperties.keySet().removeIf(s -> s.contains("Status#"));
             }
+            assignDeviceInCallStatus(aggregatedDevice, false);
             return;
         }
         long currentTimestamp = System.currentTimeMillis();
@@ -1363,6 +1364,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         if (!deviceProperties.containsKey("APICapabilities") || !deviceProperties.containsKey("APIPermissions") ||
         !deviceProperties.get("APICapabilities").contains("xapi") || !deviceProperties.get("APIPermissions").contains("xapi")
         || BooleanUtils.isFalse(aggregatedDevice.getDeviceOnline())) {
+            assignDeviceInCallStatus(aggregatedDevice, false);
             logDebugMessage(String.format("Device %s does not support or has permissions for xapi use. Skipping statistics retrieval.", deviceId));
             return;
         }
@@ -1372,6 +1374,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                 if (logger.isDebugEnabled()) {
                     logger.debug("Unable to retrieve device configuration details.");
                 }
+                assignDeviceInCallStatus(aggregatedDevice, false);
                 return;
             }
             Map<String, String> properties = new HashMap<>();
@@ -1383,17 +1386,22 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             String teamsState = properties.get(Constants.CallIndicators.MS_EXTENSION_IN_CALL);
             String teamsNewState = properties.get(Constants.CallIndicators.MS_TEAMS_IN_CALL);
 
-            EndpointStatistics endpointStatistics = new EndpointStatistics();
-            if (Objects.equals("InCall", systemState) || Objects.equals("True", teamsState) || Objects.equals("True", teamsNewState)) {
-                endpointStatistics.setInCall(true);
-            } else {
-                endpointStatistics.setInCall(false);
-            }
-            aggregatedDevice.setMonitoredStatistics(Collections.singletonList(endpointStatistics));
-            
+            assignDeviceInCallStatus(aggregatedDevice, Objects.equals("InCall", systemState) || Objects.equals("True", teamsState) || Objects.equals("True", teamsNewState));
         } catch (Exception ex) {
             logger.warn("Unable to retrieve xAPI status of device " + deviceId, ex);
         }
+    }
+
+    /**
+     * Assign AggregatedDevice's inCall status based on the value provided
+     *
+     * @param aggregatedDevice for which inCall status must be set
+     * @param inCall status of the call
+     * */
+    private void assignDeviceInCallStatus(AggregatedDevice aggregatedDevice, boolean inCall) {
+        EndpointStatistics endpointStatistics = new EndpointStatistics();
+        endpointStatistics.setInCall(inCall);
+        aggregatedDevice.setMonitoredStatistics(Collections.singletonList(endpointStatistics));
     }
 
     /**
