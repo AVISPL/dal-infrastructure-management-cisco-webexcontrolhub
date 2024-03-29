@@ -100,4 +100,14 @@ public interface Constants {
         List<String> ONLINE_STATUS = Arrays.asList("connected", "connected_with_issues", "activating");
     }
 
+    /**
+     * Collection of properties that indicate device call status
+     * @author Maksym.Rossiytsev
+     * @since 1.0.0
+     * */
+    interface CallIndicators {
+        String SYSTEM_STATE = "SystemUnitStatus#StateSystem"; //InCall/Initialized/Initializing/Multisite/Sleeping
+        String MS_EXTENSION_IN_CALL = "SystemUnitStatus#ExtensionsMicrosoftInCall";
+        String MS_TEAMS_IN_CALL = "MicrosoftTeamsStatus#CallingInCall";
+    }
 }

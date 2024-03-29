@@ -6,6 +6,7 @@ package com.avispl.symphony.dal.communicator;
 import com.avispl.symphony.api.dal.control.Controller;
 import com.avispl.symphony.api.dal.dto.control.AdvancedControllableProperty;
 import com.avispl.symphony.api.dal.dto.control.ControllableProperty;
+import com.avispl.symphony.api.dal.dto.monitor.EndpointStatistics;
 import com.avispl.symphony.api.dal.dto.monitor.ExtendedStatistics;
 import com.avispl.symphony.api.dal.dto.monitor.Statistics;
 import com.avispl.symphony.api.dal.dto.monitor.aggregator.AggregatedDevice;
@@ -1377,6 +1378,19 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             JsonNode elements = jsonNode.at(Constants.Paths.RESULT);
             collectStatusProperties(elements, properties, "");
             deviceProperties.putAll(properties);
+
+            String systemState = properties.get(Constants.CallIndicators.SYSTEM_STATE);
+            String teamsState = properties.get(Constants.CallIndicators.MS_EXTENSION_IN_CALL);
+            String teamsNewState = properties.get(Constants.CallIndicators.MS_TEAMS_IN_CALL);
+
+            EndpointStatistics endpointStatistics = new EndpointStatistics();
+            if (Objects.equals("InCall", systemState) || Objects.equals("True", teamsState) || Objects.equals("True", teamsNewState)) {
+                endpointStatistics.setInCall(true);
+            } else {
+                endpointStatistics.setInCall(false);
+            }
+            aggregatedDevice.setMonitoredStatistics(Collections.singletonList(endpointStatistics));
+            
         } catch (Exception ex) {
             logger.warn("Unable to retrieve xAPI status of device " + deviceId, ex);
         }
