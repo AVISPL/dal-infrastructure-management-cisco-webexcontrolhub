@@ -948,11 +948,11 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             if (StringUtils.isNullOrEmpty(accessToken)) {
                 authenticate();
             }
-            headers.add("Authorization", "Bearer " + accessToken);
+            headers.add(Constants.Headers.AUTHORIZATION, "Bearer " + accessToken);
         }
         if (httpMethod == HttpMethod.PATCH) {
-            headers.remove("Content-Type");
-            headers.add("Content-Type", "application/json-patch+json");
+            headers.remove(Constants.Headers.CONTENT_TYPE);
+            headers.add(Constants.Headers.CONTENT_TYPE, "application/json-patch+json");
         }
         return super.putExtraRequestHeaders(httpMethod, uri, headers);
     }
@@ -1190,7 +1190,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         Map<String, String> deviceProperties = aggregatedDevice.getProperties();
         if (!includeConfigurationUpdates) {
             if (deviceProperties != null && !deviceProperties.isEmpty()) {
-                deviceProperties.keySet().removeIf(s -> s.contains("Configuration#"));
+                deviceProperties.keySet().removeIf(s -> s.contains(Constants.PropertyNames.CONFIGURATION_GROUP));
             }
             return;
         }
@@ -1208,14 +1208,14 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         Map<String, String> properties = aggregatedDevice.getProperties();
         List<AdvancedControllableProperty> existingControls = aggregatedDevice.getControllableProperties();
         List<AdvancedControllableProperty> tagControls = existingControls.stream().filter(advancedControllableProperty ->
-                advancedControllableProperty.getName().startsWith("DeviceTags")).collect(toList());
+                advancedControllableProperty.getName().startsWith(Constants.PropertyNames.DEVICE_TAGS)).collect(toList());
 
         List<AdvancedControllableProperty> advancedControllableProperties = new ArrayList<>(tagControls);
         aggregatedDevice.setControllableProperties(advancedControllableProperties);
 
         try {
             if (deviceProperties != null && !deviceProperties.isEmpty()) {
-                deviceProperties.keySet().removeIf(s -> s.contains("Configuration#"));
+                deviceProperties.keySet().removeIf(s -> s.contains(Constants.PropertyNames.CONFIGURATION_GROUP));
             }
             JsonNode response = doGetWithRetry(Constants.URL.DEVICE_CONFIGURATIONS + deviceId);
             if (response == null) {
@@ -1237,14 +1237,14 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                         name += nameElements[i];
                         int nextElement = i + 1;
                         if (!name.contains("#") && nameElements.length > nextElement && nameElements[nextElement].contains("[")) {
-                            name += "Configuration#";
+                            name += Constants.PropertyNames.CONFIGURATION_GROUP;
                         } else if (!name.contains("#") && i == 0 && name.contains("[")) {
-                            name = name.split("\\[")[0] + "Configuration#" + name;
+                            name = name.split("\\[")[0] + Constants.PropertyNames.CONFIGURATION_GROUP + name;
                         }
                     }
                     symphonyConfigPropertyName = name;
                 } else {
-                    symphonyConfigPropertyName = configPropertyName.replaceFirst("\\.", "Configuration#").replaceAll("\\.", "");
+                    symphonyConfigPropertyName = configPropertyName.replaceFirst("\\.", Constants.PropertyNames.CONFIGURATION_GROUP).replaceAll("\\.", "");
                 }
 
                 controllablePropertiesToConfigurationNames.put(symphonyConfigPropertyName, configPropertyName);
@@ -1270,7 +1270,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                 }
                 properties.put(symphonyConfigPropertyName, value);
             });
-            properties.put("LastUpdated", generateCurrentDateISO8601());
+            properties.put(Constants.PropertyNames.LAST_UPDATED, generateCurrentDateISO8601());
         } catch (Exception ex) {
             logger.warn("Unable to retrieve WebEx Configuration details for device " + deviceId, ex);
         }
@@ -1344,7 +1344,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         Map<String, String> deviceProperties = aggregatedDevice.getProperties();
         if (!includeStatusUpdates) {
             if (deviceProperties != null && !deviceProperties.isEmpty()) {
-                deviceProperties.keySet().removeIf(s -> s.contains("Status#"));
+                deviceProperties.keySet().removeIf(s -> s.contains(Constants.PropertyNames.STATUS_GROUP));
             }
             assignDeviceInCallStatus(aggregatedDevice, false);
             return;
@@ -1360,9 +1360,9 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         }
         validDeviceStatusRetrievalPeriodTimestamps.put(deviceId, currentTimestamp + deviceStatusRetrievalTimeout);
 
-        deviceProperties.keySet().removeIf(name -> name.contains("Status#"));
-        if (!deviceProperties.containsKey("APICapabilities") || !deviceProperties.containsKey("APIPermissions") ||
-        !deviceProperties.get("APICapabilities").contains("xapi") || !deviceProperties.get("APIPermissions").contains("xapi")
+        deviceProperties.keySet().removeIf(name -> name.contains(Constants.PropertyNames.STATUS_GROUP));
+        if (!deviceProperties.containsKey(Constants.PropertyNames.API_CAPABILITIES) || !deviceProperties.containsKey(Constants.PropertyNames.API_PERMISSIONS) ||
+        !deviceProperties.get(Constants.PropertyNames.API_CAPABILITIES).contains("xapi") || !deviceProperties.get(Constants.PropertyNames.API_PERMISSIONS).contains("xapi")
         || BooleanUtils.isFalse(aggregatedDevice.getDeviceOnline())) {
             assignDeviceInCallStatus(aggregatedDevice, false);
             logDebugMessage(String.format("Device %s does not support or has permissions for xapi use. Skipping statistics retrieval.", deviceId));
@@ -1386,7 +1386,8 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             String teamsState = properties.get(Constants.CallIndicators.MS_EXTENSION_IN_CALL);
             String teamsNewState = properties.get(Constants.CallIndicators.MS_TEAMS_IN_CALL);
 
-            assignDeviceInCallStatus(aggregatedDevice, Objects.equals("InCall", systemState) || Objects.equals("True", teamsState) || Objects.equals("True", teamsNewState));
+            assignDeviceInCallStatus(aggregatedDevice, Objects.equals(Constants.States.IN_CALL, systemState)
+                    || Objects.equals(Constants.States.TRUE, teamsState) || Objects.equals(Constants.States.TRUE, teamsNewState));
         } catch (Exception ex) {
             logger.warn("Unable to retrieve xAPI status of device " + deviceId, ex);
         }
@@ -1417,18 +1418,18 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             String nodeName = s;
 
             if (StringUtils.isNullOrEmpty(previous)) {
-                if (includePropertyGroups.contains(s + "Status")) {
-                    availablePropertyGroups.add(s + "Status");
+                if (includePropertyGroups.contains(s + Constants.PropertyNames.STATUS)) {
+                    availablePropertyGroups.add(s + Constants.PropertyNames.STATUS);
                 } else {
-                    availablePropertyGroups.add(s + "Status");
+                    availablePropertyGroups.add(s + Constants.PropertyNames.STATUS);
                     return;
                 }
                 if (elements.get(s).isArray()) {
-                    nodeName = s + "Status#" + nodeName;
+                    nodeName = s + Constants.PropertyNames.STATUS_GROUP + nodeName;
                     processArrayStatusProperties(elements, properties, s, nodeName);
                     return;
                 } else {
-                    nodeName = s + "Status#";
+                    nodeName = s + Constants.PropertyNames.STATUS_GROUP;
                     properties.put(nodeName, "");
                 }
             } else {
@@ -1456,7 +1457,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                 collectStatusProperties(elements.get(s), properties, nodeName);
             }
         });
-        properties.put("LastUpdated", generateCurrentDateISO8601());
+        properties.put(Constants.PropertyNames.LAST_UPDATED, generateCurrentDateISO8601());
     }
 
     /**

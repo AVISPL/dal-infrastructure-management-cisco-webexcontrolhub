@@ -61,6 +61,24 @@ public interface Constants {
         String ADAPTER_BUILD_DATE = "AdapterBuildDate";
         String ADAPTER_UPTIME = "AdapterUptime";
         String AVAILABLE_PROPERTY_GROUPS = "AvailableDevicesPropertyGroups#";
+        String API_CAPABILITIES = "APICapabilities";
+        String API_PERMISSIONS = "APIPermissions";
+        String STATUS = "Status";
+        String STATUS_GROUP = "Status#";
+        String LAST_UPDATED = "LastUpdated";
+        String DEVICE_TAGS = "DeviceTags";
+        String CONFIGURATION = "Configuration";
+        String CONFIGURATION_GROUP = "Configuration#";
+    }
+
+    /**
+     * Header names
+     * @author Maksym Rossiitsev
+     * @since 1.0.0
+     * */
+    interface Headers {
+        String AUTHORIZATION = "Authorization";
+        String CONTENT_TYPE = "Content-Type";
     }
 
     /**
@@ -97,7 +115,8 @@ public interface Constants {
      * @since 1.0.0
      * */
     interface States {
-        List<String> ONLINE_STATUS = Arrays.asList("connected", "connected_with_issues", "activating");
+        String IN_CALL = "InCall";
+        String TRUE = "True";
     }
 
     /**
