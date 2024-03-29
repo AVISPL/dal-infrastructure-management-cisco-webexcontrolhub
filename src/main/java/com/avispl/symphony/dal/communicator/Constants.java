@@ -3,9 +3,6 @@
  */
 package com.avispl.symphony.dal.communicator;
 
-import java.util.Arrays;
-import java.util.List;
-
 /**
  * Adapter constants storage
  * @author Maksym Rossiitsev
