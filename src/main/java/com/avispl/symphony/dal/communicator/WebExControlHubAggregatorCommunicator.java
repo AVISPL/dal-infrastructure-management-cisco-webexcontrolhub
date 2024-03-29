@@ -41,7 +41,6 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 import static com.avispl.symphony.dal.util.ControllablePropertyFactory.*;
@@ -164,18 +163,8 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                         if (includeConfigurationUpdates || includeStatusUpdates) {
                             devicesExecutionPool.add(executorService.submit(() -> {
                                 try {
-                                    deviceIntegrityLock.lock();
-                                    try {
-                                        retrieveDeviceStatus(aggregatedDevice);
-                                    } finally {
-                                        deviceIntegrityLock.unlock();
-                                    }
-                                    deviceIntegrityLock.lock();
-                                    try {
-                                        generateDeviceConfigurationProperties(aggregatedDevice);
-                                    } finally {
-                                        deviceIntegrityLock.unlock();
-                                    }
+                                    retrieveDeviceStatus(aggregatedDevice);
+                                    generateDeviceConfigurationProperties(aggregatedDevice);
                                     cleanupActiveErrors();
                                 } catch (Exception e) {
                                     logger.error(String.format("Exception during WebEx device '%s' data processing.", aggregatedDevice.getDeviceName()), e);
@@ -282,7 +271,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     private int deviceRetrievalPageSize = 100;
 
     /**
-     *
+     * Total retry attempts for data retrieval
      * */
     private int requestRetryAttempts = 10;
 
@@ -380,12 +369,6 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
      * Adapter metadate properties, contain information about build version and build date
      * */
     private Properties adapterProperties;
-
-    /**
-     * Lock to suspend device data delivery if the device properties update is in progress.
-     * This would help to avoid sudden properties cleanup.
-     * */
-    private ReentrantLock deviceIntegrityLock = new ReentrantLock();
 
     /**
      * Aggregated devices cache
@@ -835,21 +818,16 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
 
     @Override
     public List<AggregatedDevice> retrieveMultipleStatistics() throws FailedLoginException {
-        deviceIntegrityLock.lock();
-        try {
-            if (lastErrorCode != 0) {
-                if (lastErrorCode == 401 || lastErrorCode == 403) {
-                    throw new FailedLoginException("Failed login while retrieving devices list: " + lastErrorMessage);
-                }
+        if (lastErrorCode != 0) {
+            if (lastErrorCode == 401 || lastErrorCode == 403) {
+                throw new FailedLoginException("Failed login while retrieving devices list: " + lastErrorMessage);
+            }
 //                else {
 //                    throw new RuntimeException(String.format("[%s]Unable retrieve devices list: %s", lastErrorCode, lastErrorMessage));
 //                }
-            }
-            updateValidRetrieveStatisticsTimestamp();
-            aggregatedDevices.values().forEach(aggregatedDevice -> aggregatedDevice.setTimestamp(System.currentTimeMillis()));
-        } finally {
-            deviceIntegrityLock.unlock();
         }
+        updateValidRetrieveStatisticsTimestamp();
+        aggregatedDevices.values().forEach(aggregatedDevice -> aggregatedDevice.setTimestamp(System.currentTimeMillis()));
         return new ArrayList<>(aggregatedDevices.values());
     }
 
