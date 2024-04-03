@@ -17,6 +17,7 @@ public interface Constants {
      * */
     interface URL {
         String DEVICES_URL = "devices";
+        String DEVICE_URL = "devices/";
         String ACCESS_TOKEN_URL = "access_token";
         String DEVICE_CONFIGURATIONS = "deviceConfigurations?deviceId=";
 
@@ -57,6 +58,24 @@ public interface Constants {
         String ADAPTER_BUILD_DATE = "AdapterBuildDate";
         String ADAPTER_UPTIME = "AdapterUptime";
         String AVAILABLE_PROPERTY_GROUPS = "AvailableDevicesPropertyGroups#";
+        String API_CAPABILITIES = "APICapabilities";
+        String API_PERMISSIONS = "APIPermissions";
+        String STATUS = "Status";
+        String STATUS_GROUP = "Status#";
+        String LAST_UPDATED = "LastUpdated";
+        String DEVICE_TAGS = "DeviceTags";
+        String CONFIGURATION = "Configuration";
+        String CONFIGURATION_GROUP = "Configuration#";
+    }
+
+    /**
+     * Header names
+     * @author Maksym Rossiitsev
+     * @since 1.0.0
+     * */
+    interface Headers {
+        String AUTHORIZATION = "Authorization";
+        String CONTENT_TYPE = "Content-Type";
     }
 
     /**
@@ -87,4 +106,24 @@ public interface Constants {
         String RESULT = "/result";
     }
 
+    /**
+     * State constants to match online statuses, call statuses etc
+     * @author Maksym.Rossiytsev
+     * @since 1.0.0
+     * */
+    interface States {
+        String IN_CALL = "InCall";
+        String TRUE = "True";
+    }
+
+    /**
+     * Collection of properties that indicate device call status
+     * @author Maksym.Rossiytsev
+     * @since 1.0.0
+     * */
+    interface CallIndicators {
+        String SYSTEM_STATE = "SystemUnitStatus#StateSystem"; //InCall/Initialized/Initializing/Multisite/Sleeping
+        String MS_EXTENSION_IN_CALL = "SystemUnitStatus#ExtensionsMicrosoftInCall";
+        String MS_TEAMS_IN_CALL = "MicrosoftTeamsStatus#CallingInCall";
+    }
 }

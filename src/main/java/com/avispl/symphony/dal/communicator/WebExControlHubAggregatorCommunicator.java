@@ -6,6 +6,7 @@ package com.avispl.symphony.dal.communicator;
 import com.avispl.symphony.api.dal.control.Controller;
 import com.avispl.symphony.api.dal.dto.control.AdvancedControllableProperty;
 import com.avispl.symphony.api.dal.dto.control.ControllableProperty;
+import com.avispl.symphony.api.dal.dto.monitor.EndpointStatistics;
 import com.avispl.symphony.api.dal.dto.monitor.ExtendedStatistics;
 import com.avispl.symphony.api.dal.dto.monitor.Statistics;
 import com.avispl.symphony.api.dal.dto.monitor.aggregator.AggregatedDevice;
@@ -16,12 +17,20 @@ import com.avispl.symphony.dal.aggregator.parser.AggregatedDeviceProcessor;
 import com.avispl.symphony.dal.aggregator.parser.PropertiesMapping;
 import com.avispl.symphony.dal.aggregator.parser.PropertiesMappingParser;
 import com.avispl.symphony.dal.communicator.data.AuthorizationResponse;
+import com.avispl.symphony.dal.communicator.error.RetryError;
 import com.avispl.symphony.dal.util.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.apache.commons.lang3.BooleanUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpRequest;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.client.ClientHttpRequestExecution;
+import org.springframework.http.client.ClientHttpRequestInterceptor;
+import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.util.CollectionUtils;
+import org.springframework.web.client.RestTemplate;
 
 import javax.security.auth.login.FailedLoginException;
 import java.io.IOException;
@@ -29,9 +38,10 @@ import java.net.ConnectException;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 import static com.avispl.symphony.dal.util.ControllablePropertyFactory.*;
@@ -51,7 +61,29 @@ import static java.util.stream.Collectors.toList;
  */
 public class WebExControlHubAggregatorCommunicator extends RestCommunicator implements Aggregator, Monitorable, Controller {
     /**
-     * Process that is running constantly and triggers collecting data from Zoom API endpoints,
+     * Interceptor for RestTemplate that checks for the response headers populated by the WebEx API.
+     * Specifically - Retry-After header, which is essential for proper request-retry mechanism.
+     *
+     * @author Maksym.Rossiytsev
+     * @since 1.0.0
+     */
+    class WebExRequestInterceptor implements ClientHttpRequestInterceptor {
+        @Override
+        public ClientHttpResponse intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution) throws IOException {
+            ClientHttpResponse response = execution.execute(request, body);
+            if (response.getRawStatusCode() == 429) {
+                List<String> retryAfterSeconds = response.getHeaders().get("Retry-After");
+                if (retryAfterSeconds != null && !retryAfterSeconds.isEmpty()) {
+                    response.close();
+                    throw new RetryError(Long.parseLong(retryAfterSeconds.get(0)));
+                }
+            }
+            return response;
+        }
+    }
+
+    /**
+     * Process that is running constantly and triggers collecting data from WebEx API endpoints,
      * based on the given timeouts and thresholds.
      *
      * @author Maksym.Rossiytsev
@@ -84,7 +116,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                     }
 
                     updateAggregatorStatus();
-                    // next line will determine whether Zoom monitoring was paused
+                    // next line will determine whether WebEx monitoring was paused
                     if (devicePaused) {
                         logDebugMessage("The device communicator is paused, data collector is not active.");
                         continue mainloop;
@@ -129,24 +161,31 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                             logDebugMessage("Executor service reference is null. Breaking the execution.");
                             break;
                         }
-                        if (includeConfigurationUpdates || includeStatusUpdates) {
+                        if (includeStatusUpdates) {
                             devicesExecutionPool.add(executorService.submit(() -> {
                                 try {
-                                    deviceIntegrityLock.lock();
-                                    try {
-                                        retrieveDeviceStatus(aggregatedDevice);
-                                    } finally {
-                                        deviceIntegrityLock.unlock();
-                                    }
-                                    deviceIntegrityLock.lock();
-                                    try {
-                                        generateDeviceConfigurationProperties(aggregatedDevice);
-                                    } finally {
-                                        deviceIntegrityLock.unlock();
-                                    }
+                                    requestDeviceStatus(aggregatedDevice);
                                     cleanupActiveErrors();
                                 } catch (Exception e) {
-                                    logger.error(String.format("Exception during WebEx device '%s' data processing.", aggregatedDevice.getDeviceName()), e);
+                                    logger.error(String.format("Exception during WebEx device '%s' status data processing.", aggregatedDevice.getDeviceName()), e);
+                                    if (e instanceof CommandFailureException) {
+                                        int statusCode = ((CommandFailureException) e).getStatusCode();
+                                        if (statusCode != 404 && statusCode != 403) {
+                                            saveActiveErrors(statusCode, e.getMessage());
+                                        }
+                                    } else if (e instanceof FailedLoginException) {
+                                        saveActiveErrors(401, e.getMessage());
+                                    }
+                                }
+                            }));
+                        }
+                        if (includeConfigurationUpdates) {
+                            devicesExecutionPool.add(executorService.submit(() -> {
+                                try {
+                                    requestDeviceConfiguration(aggregatedDevice);
+                                    cleanupActiveErrors();
+                                } catch (Exception e) {
+                                    logger.error(String.format("Exception during WebEx device '%s' configuration data processing.", aggregatedDevice.getDeviceName()), e);
                                     if (e instanceof CommandFailureException) {
                                         int statusCode = ((CommandFailureException) e).getStatusCode();
                                         if (statusCode != 404 && statusCode != 403) {
@@ -245,6 +284,16 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     private boolean includeConfigurationUpdates = true;
 
     /**
+     *
+     * */
+    private int deviceRetrievalPageSize = 100;
+
+    /**
+     * Total retry attempts for data retrieval
+     * */
+    private int requestRetryAttempts = 10;
+
+    /**
      * Time period within which the device configuration cannot be refreshed.
      * Ignored if device list is not yet retrieved or the cached device list is empty {@link WebExControlHubAggregatorCommunicator#aggregatedDevices}
      */
@@ -340,12 +389,6 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     private Properties adapterProperties;
 
     /**
-     * Lock to suspend device data delivery if the device properties update is in progress.
-     * This would help to avoid sudden properties cleanup.
-     * */
-    private ReentrantLock deviceIntegrityLock = new ReentrantLock();
-
-    /**
      * Aggregated devices cache
      * */
     private ConcurrentHashMap<String, AggregatedDevice> aggregatedDevices = new ConcurrentHashMap<>();
@@ -380,7 +423,14 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
      * */
     private Set<String> typeDeviceFilter = new HashSet<>();
 
+    /**
+     * Interceptor for RestTemplate that injects
+     * authorization header and fixes malformed headers sent by WebEx API
+     */
+    private ClientHttpRequestInterceptor webExHeaderInterceptor = new WebExRequestInterceptor();
+
     public WebExControlHubAggregatorCommunicator() throws IOException {
+
         Map<String, PropertiesMapping> mapping = new PropertiesMappingParser().loadYML("mapping/model-mapping.yml", getClass());
         aggregatedDeviceProcessor = new AggregatedDeviceProcessor(mapping);
         adapterProperties = new Properties();
@@ -575,6 +625,42 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     }
 
     /**
+     * Retrieves {@link #deviceRetrievalPageSize}
+     *
+     * @return value of {@link #deviceRetrievalPageSize}
+     */
+    public int getDeviceRetrievalPageSize() {
+        return deviceRetrievalPageSize;
+    }
+
+    /**
+     * Sets {@link #deviceRetrievalPageSize} value
+     *
+     * @param deviceRetrievalPageSize new value of {@link #deviceRetrievalPageSize}
+     */
+    public void setDeviceRetrievalPageSize(int deviceRetrievalPageSize) {
+        this.deviceRetrievalPageSize = deviceRetrievalPageSize;
+    }
+
+    /**
+     * Retrieves {@link #requestRetryAttempts}
+     *
+     * @return value of {@link #requestRetryAttempts}
+     */
+    public int getRequestRetryAttempts() {
+        return requestRetryAttempts;
+    }
+
+    /**
+     * Sets {@link #requestRetryAttempts} value
+     *
+     * @param requestRetryAttempts new value of {@link #requestRetryAttempts}
+     */
+    public void setRequestRetryAttempts(int requestRetryAttempts) {
+        this.requestRetryAttempts = requestRetryAttempts;
+    }
+
+    /**
      * Retrieves {@link #refreshToken}
      *
      * @return value of {@link #refreshToken}
@@ -751,20 +837,13 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
 
     @Override
     public List<AggregatedDevice> retrieveMultipleStatistics() throws FailedLoginException {
-        deviceIntegrityLock.lock();
-        try {
-            if (lastErrorCode != 0) {
-                if (lastErrorCode == 401 || lastErrorCode == 403) {
-                    throw new FailedLoginException("Failed login while retrieving devices list: " + lastErrorMessage);
-                } else {
-                    throw new RuntimeException(String.format("[%s]Unable retrieve devices list: %s", lastErrorCode, lastErrorMessage));
-                }
+        if (lastErrorCode != 0) {
+            if (lastErrorCode == 401 || lastErrorCode == 403) {
+                throw new FailedLoginException("Failed login while retrieving devices list: " + lastErrorMessage);
             }
-            updateValidRetrieveStatisticsTimestamp();
-            aggregatedDevices.values().forEach(aggregatedDevice -> aggregatedDevice.setTimestamp(System.currentTimeMillis()));
-        } finally {
-            deviceIntegrityLock.unlock();
         }
+        updateValidRetrieveStatisticsTimestamp();
+        aggregatedDevices.values().forEach(aggregatedDevice -> aggregatedDevice.setTimestamp(System.currentTimeMillis()));
         return new ArrayList<>(aggregatedDevices.values());
     }
 
@@ -819,6 +898,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
      * @throws Exception if any error occurs
      * */
     private void fetchDevicesList() throws Exception {
+
         long currentTimestamp = System.currentTimeMillis();
         if (validDeviceMetaDataRetrievalPeriodTimestamp > currentTimestamp) {
             logDebugMessage(String.format("General devices metadata retrieval is in cooldown. %s seconds left",
@@ -826,22 +906,21 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             return;
         }
         validDeviceMetaDataRetrievalPeriodTimestamp = currentTimestamp + deviceMetaDataRetrievalTimeout;
-
         List<AggregatedDevice> aggregatedDevicesList = listWebExDevices();
+
+        //If device is not in the list, provided by the server anymore - remove it from the cache
+        List<String> collectedDeviceIds = aggregatedDevicesList.stream().map(AggregatedDevice::getDeviceId).collect(toList());
+        aggregatedDevices.keySet().removeIf(deviceId -> !collectedDeviceIds.contains(deviceId));
+
         for(AggregatedDevice aggregatedDevice: aggregatedDevicesList) {
             String deviceId = aggregatedDevice.getDeviceId();
-            Map<String, String> properties = aggregatedDevice.getProperties();
-            List<String> deviceTags = Arrays.stream(properties.get(Constants.PropertyNames.REMOVE_TAG)
-                    .replaceAll("\\[", "").replaceAll("]", "")
-                    .replaceAll("\"", "").split(",")).map(String::trim)
-                    .filter(StringUtils::isNotNullOrEmpty).collect(toList());
-            properties.put(Constants.PropertyNames.TAGS, String.join(", ", deviceTags));
             if (!aggregatedDevices.containsKey(deviceId)) {
                 aggregatedDevices.put(deviceId, aggregatedDevice);
             } else {
                 AggregatedDevice existingAggregatedDevice = aggregatedDevices.get(deviceId);
-                existingAggregatedDevice.getProperties().keySet().removeIf(Constants.PropertyNames.TAGS::equals);
-                existingAggregatedDevice.getProperties().putAll(aggregatedDevice.getProperties());
+                Map<String, String> deviceProperties = existingAggregatedDevice.getProperties();
+                deviceProperties.putAll(aggregatedDevice.getProperties());
+                deviceProperties.put(Constants.PropertyNames.LAST_UPDATED, generateCurrentDateISO8601());
                 existingAggregatedDevice.setDeviceOnline(aggregatedDevice.getDeviceOnline());
                 existingAggregatedDevice.setTimestamp(System.currentTimeMillis());
             }
@@ -866,17 +945,34 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         generateAccessToken();
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Additional interceptor to RestTemplate that checks the amount of requests left for metrics endpoints
+     */
+    @Override
+    protected RestTemplate obtainRestTemplate() throws Exception {
+        RestTemplate restTemplate = super.obtainRestTemplate();
+
+        List<ClientHttpRequestInterceptor> interceptors = restTemplate.getInterceptors();
+        if (!interceptors.contains(webExHeaderInterceptor)) {
+            interceptors.add(webExHeaderInterceptor);
+        }
+
+        return restTemplate;
+    }
+
     @Override
     protected HttpHeaders putExtraRequestHeaders(HttpMethod httpMethod, String uri, HttpHeaders headers) throws Exception {
         if (!uri.contains("access_token")) {
             if (StringUtils.isNullOrEmpty(accessToken)) {
                 authenticate();
             }
-            headers.add("Authorization", "Bearer " + accessToken);
+            headers.add(Constants.Headers.AUTHORIZATION, "Bearer " + accessToken);
         }
         if (httpMethod == HttpMethod.PATCH) {
-            headers.remove("Content-Type");
-            headers.add("Content-Type", "application/json-patch+json");
+            headers.remove(Constants.Headers.CONTENT_TYPE);
+            headers.add(Constants.Headers.CONTENT_TYPE, "application/json-patch+json");
         }
         return super.putExtraRequestHeaders(httpMethod, uri, headers);
     }
@@ -905,6 +1001,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                 deviceListUrl.append("?");
             }
             deviceListUrl.append("type=").append(String.join(",", typeDeviceFilter));
+            hasFilter = true;
         }
         if (!productDeviceFilter.isEmpty()) {
             if (hasFilter) {
@@ -913,13 +1010,68 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                 deviceListUrl.append("?");
             }
             deviceListUrl.append("product=").append(String.join(",", productDeviceFilter));
+            hasFilter = true;
         }
-        JsonNode response = doGet(deviceListUrl.toString(), JsonNode.class);
-        List<AggregatedDevice> extractedDevices = aggregatedDeviceProcessor.extractDevices(response);
-        extractedDevices.forEach(aggregatedDevice -> {
-            aggregatedDevice.setDeviceName(aggregatedDevice.getDeviceName() + ": " + aggregatedDevice.getDeviceModel());
-        });
+        if (hasFilter) {
+            deviceListUrl.append("&");
+        } else {
+            deviceListUrl.append("?");
+        }
+        deviceListUrl.append("start=%d&max=%d");
+
+        List<AggregatedDevice> extractedDevices = new ArrayList<>();
+        listWebExDevices(extractedDevices, deviceListUrl.toString(), 0);
+
+        extractedDevices.forEach(aggregatedDevice -> aggregatedDevice.setDeviceName(aggregatedDevice.getDeviceName() + ": " + aggregatedDevice.getDeviceModel()));
         return extractedDevices;
+    }
+
+    /**
+     * List WebEx devices, with pagination (start/max query string parameters). The method is called recursively
+     *
+     * @param aggregatedDevices list to add aggregated devices to
+     * @param baseUrl url to use for devices collection (with filters applied)
+     * @param start starting index for current request
+     * */
+    private void listWebExDevices(List<AggregatedDevice> aggregatedDevices, String baseUrl, int start) throws Exception {
+        String url = String.format(baseUrl, start, start + deviceRetrievalPageSize);
+        JsonNode response = null;
+        int retries = 0;
+        while (retries++ < requestRetryAttempts) {
+            try {
+                response = doGetWithRetry(url);
+                break;
+            } catch (Exception e) {
+                Throwable rootCause = ExceptionUtils.getRootCause(e);
+                if (ExceptionUtils.hasCause(rootCause, RetryError.class)) {
+                    Long retryAfter = ((RetryError)rootCause).getRetryAfter();
+                    if (retryAfter != null) {
+                        TimeUnit.SECONDS.sleep(retryAfter);
+                        response = doGetWithRetry(url);
+                        continue;
+                    }
+                }
+                break;
+            }
+        }
+
+        if (response == null) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Unable to retrieve device configuration details.");
+            }
+            return;
+        }
+        List<AggregatedDevice> extractedDevices = aggregatedDeviceProcessor.extractDevices(response);
+        aggregatedDevices.addAll(extractedDevices);
+
+        if (extractedDevices.size() < deviceRetrievalPageSize) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Last page of the output is reached, finishing collecting devices list");
+            }
+            return;
+        } else {
+            listWebExDevices(aggregatedDevices, baseUrl, start + deviceRetrievalPageSize + 1);
+        }
     }
 
     /**
@@ -1075,7 +1227,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         Map<String, String> deviceProperties = aggregatedDevice.getProperties();
         if (!includeConfigurationUpdates) {
             if (deviceProperties != null && !deviceProperties.isEmpty()) {
-                deviceProperties.keySet().removeIf(s -> s.contains("Configuration#"));
+                deviceProperties.keySet().removeIf(s -> s.contains(Constants.PropertyNames.CONFIGURATION_GROUP));
             }
             return;
         }
@@ -1093,16 +1245,22 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         Map<String, String> properties = aggregatedDevice.getProperties();
         List<AdvancedControllableProperty> existingControls = aggregatedDevice.getControllableProperties();
         List<AdvancedControllableProperty> tagControls = existingControls.stream().filter(advancedControllableProperty ->
-                advancedControllableProperty.getName().startsWith("DeviceTags")).collect(toList());
+                advancedControllableProperty.getName().startsWith(Constants.PropertyNames.DEVICE_TAGS)).collect(toList());
 
         List<AdvancedControllableProperty> advancedControllableProperties = new ArrayList<>(tagControls);
         aggregatedDevice.setControllableProperties(advancedControllableProperties);
 
         try {
-            if (deviceProperties != null && !deviceProperties.isEmpty()) {
-                deviceProperties.keySet().removeIf(s -> s.contains("Configuration#"));
+            JsonNode response = doGetWithRetry(Constants.URL.DEVICE_CONFIGURATIONS + deviceId);
+            if (response == null) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Unable to retrieve device configuration details.");
+                }
+                return;
             }
-            JsonNode response = doGet(Constants.URL.DEVICE_CONFIGURATIONS + deviceId, JsonNode.class);
+            if (deviceProperties != null && !deviceProperties.isEmpty()) {
+                deviceProperties.keySet().removeIf(s -> s.contains(Constants.PropertyNames.CONFIGURATION_GROUP));
+            }
             JsonNode array = response.at(Constants.Paths.ITEMS);
             array.fieldNames().forEachRemaining(configPropertyName -> {
                 JsonNode configValues = array.get(configPropertyName);
@@ -1116,14 +1274,14 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                         name += nameElements[i];
                         int nextElement = i + 1;
                         if (!name.contains("#") && nameElements.length > nextElement && nameElements[nextElement].contains("[")) {
-                            name += "Configuration#";
+                            name += Constants.PropertyNames.CONFIGURATION_GROUP;
                         } else if (!name.contains("#") && i == 0 && name.contains("[")) {
-                            name = name.split("\\[")[0] + "Configuration#" + name;
+                            name = name.split("\\[")[0] + Constants.PropertyNames.CONFIGURATION_GROUP + name;
                         }
                     }
                     symphonyConfigPropertyName = name;
                 } else {
-                    symphonyConfigPropertyName = configPropertyName.replaceFirst("\\.", "Configuration#").replaceAll("\\.", "");
+                    symphonyConfigPropertyName = configPropertyName.replaceFirst("\\.", Constants.PropertyNames.CONFIGURATION_GROUP).replaceAll("\\.", "");
                 }
 
                 controllablePropertiesToConfigurationNames.put(symphonyConfigPropertyName, configPropertyName);
@@ -1149,6 +1307,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                 }
                 properties.put(symphonyConfigPropertyName, value);
             });
+            properties.put(Constants.PropertyNames.LAST_UPDATED, generateCurrentDateISO8601());
         } catch (Exception ex) {
             logger.warn("Unable to retrieve WebEx Configuration details for device " + deviceId, ex);
         }
@@ -1222,8 +1381,9 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         Map<String, String> deviceProperties = aggregatedDevice.getProperties();
         if (!includeStatusUpdates) {
             if (deviceProperties != null && !deviceProperties.isEmpty()) {
-                deviceProperties.keySet().removeIf(s -> s.contains("Status#"));
+                deviceProperties.keySet().removeIf(s -> s.contains(Constants.PropertyNames.STATUS_GROUP));
             }
+            assignDeviceInCallStatus(aggregatedDevice, false);
             return;
         }
         long currentTimestamp = System.currentTimeMillis();
@@ -1237,22 +1397,98 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         }
         validDeviceStatusRetrievalPeriodTimestamps.put(deviceId, currentTimestamp + deviceStatusRetrievalTimeout);
 
-        deviceProperties.keySet().removeIf(name -> name.contains("Status#"));
-        if (!deviceProperties.containsKey("APICapabilities") || !deviceProperties.containsKey("APIPermissions") ||
-        !deviceProperties.get("APICapabilities").contains("xapi") || !deviceProperties.get("APIPermissions").contains("xapi")
-        || BooleanUtils.isFalse(aggregatedDevice.getDeviceOnline())) {
+        if (!deviceProperties.containsKey(Constants.PropertyNames.API_CAPABILITIES) || !deviceProperties.containsKey(Constants.PropertyNames.API_PERMISSIONS) ||
+                !deviceProperties.get(Constants.PropertyNames.API_CAPABILITIES).contains("xapi") || !deviceProperties.get(Constants.PropertyNames.API_PERMISSIONS).contains("xapi")
+                || BooleanUtils.isFalse(aggregatedDevice.getDeviceOnline())) {
+            assignDeviceInCallStatus(aggregatedDevice, false);
+            deviceProperties.keySet().removeIf(name -> name.contains(Constants.PropertyNames.STATUS_GROUP));
             logDebugMessage(String.format("Device %s does not support or has permissions for xapi use. Skipping statistics retrieval.", deviceId));
             return;
         }
         try {
-            JsonNode jsonNode = doGet(String.format(Constants.URL.XAPI_STATUS, deviceId), JsonNode.class);
+            JsonNode jsonNode = doGetWithRetry(String.format(Constants.URL.XAPI_STATUS, deviceId));
+            if (jsonNode == null) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Unable to retrieve device status details.");
+                }
+                assignDeviceInCallStatus(aggregatedDevice, false);
+                return;
+            }
+            if (deviceProperties != null && !deviceProperties.isEmpty()) {
+                deviceProperties.keySet().removeIf(name -> name.contains(Constants.PropertyNames.STATUS_GROUP));
+            }
             Map<String, String> properties = new HashMap<>();
             JsonNode elements = jsonNode.at(Constants.Paths.RESULT);
             collectStatusProperties(elements, properties, "");
             deviceProperties.putAll(properties);
+
+            String systemState = properties.get(Constants.CallIndicators.SYSTEM_STATE);
+            String teamsState = properties.get(Constants.CallIndicators.MS_EXTENSION_IN_CALL);
+            String teamsNewState = properties.get(Constants.CallIndicators.MS_TEAMS_IN_CALL);
+
+            assignDeviceInCallStatus(aggregatedDevice, Objects.equals(Constants.States.IN_CALL, systemState)
+                    || Objects.equals(Constants.States.TRUE, teamsState) || Objects.equals(Constants.States.TRUE, teamsNewState));
         } catch (Exception ex) {
             logger.warn("Unable to retrieve xAPI status of device " + deviceId, ex);
         }
+    }
+
+    /**
+     * Request device status details
+     *
+     * @param aggregatedDevice to request details for
+     * @throws Exception if any error occurs
+     * */
+    private void requestDeviceStatus(AggregatedDevice aggregatedDevice) throws Exception {
+        try {
+            retrieveDeviceStatus(aggregatedDevice);
+        } catch (Exception e) {
+            Throwable rootCause = ExceptionUtils.getRootCause(e);
+            if (ExceptionUtils.hasCause(rootCause, RetryError.class)) {
+                Long retryAfter = ((RetryError)rootCause).getRetryAfter();
+                if (retryAfter != null) {
+                    TimeUnit.SECONDS.sleep(retryAfter);
+                    requestDeviceStatus(aggregatedDevice);
+                    return;
+                }
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * Request device configuration details
+     *
+     * @param aggregatedDevice to request details for
+     * @throws Exception if any error occurs
+     * */
+    private void requestDeviceConfiguration(AggregatedDevice aggregatedDevice) throws Exception {
+        try {
+            generateDeviceConfigurationProperties(aggregatedDevice);
+        } catch (Exception e) {
+            Throwable rootCause = ExceptionUtils.getRootCause(e);
+            if (ExceptionUtils.hasCause(rootCause, RetryError.class)) {
+                Long retryAfter = ((RetryError)rootCause).getRetryAfter();
+                if (retryAfter != null) {
+                    TimeUnit.SECONDS.sleep(retryAfter);
+                    requestDeviceConfiguration(aggregatedDevice);
+                    return;
+                }
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * Assign AggregatedDevice's inCall status based on the value provided
+     *
+     * @param aggregatedDevice for which inCall status must be set
+     * @param inCall status of the call
+     * */
+    private void assignDeviceInCallStatus(AggregatedDevice aggregatedDevice, boolean inCall) {
+        EndpointStatistics endpointStatistics = new EndpointStatistics();
+        endpointStatistics.setInCall(inCall);
+        aggregatedDevice.setMonitoredStatistics(Collections.singletonList(endpointStatistics));
     }
 
     /**
@@ -1268,18 +1504,18 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             String nodeName = s;
 
             if (StringUtils.isNullOrEmpty(previous)) {
-                if (includePropertyGroups.contains(s + "Status")) {
-                    availablePropertyGroups.add(s + "Status");
+                if (includePropertyGroups.contains(s + Constants.PropertyNames.STATUS)) {
+                    availablePropertyGroups.add(s + Constants.PropertyNames.STATUS);
                 } else {
-                    availablePropertyGroups.add(s + "Status");
+                    availablePropertyGroups.add(s + Constants.PropertyNames.STATUS);
                     return;
                 }
                 if (elements.get(s).isArray()) {
-                    nodeName = s + "Status#" + nodeName;
+                    nodeName = s + Constants.PropertyNames.STATUS_GROUP + nodeName;
                     processArrayStatusProperties(elements, properties, s, nodeName);
                     return;
                 } else {
-                    nodeName = s + "Status#";
+                    nodeName = s + Constants.PropertyNames.STATUS_GROUP;
                     properties.put(nodeName, "");
                 }
             } else {
@@ -1307,6 +1543,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                 collectStatusProperties(elements.get(s), properties, nodeName);
             }
         });
+        properties.put(Constants.PropertyNames.LAST_UPDATED, generateCurrentDateISO8601());
     }
 
     /**
@@ -1421,10 +1658,10 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         boolean success = String.valueOf(response.at(Constants.Paths.TAGS)).contains(tag);
         if (success) {
             Map<String, String> properties = aggregatedDevices.get(deviceId).getProperties();
-            List<String> existingTags = Arrays.stream(properties.get(Constants.PropertyNames.ADD_TAG).split(","))
+            List<String> existingTags = Arrays.stream(properties.get(Constants.PropertyNames.TAGS).split(","))
                     .map(String::trim).filter(StringUtils::isNotNullOrEmpty).collect(toList());
             existingTags.add(tag);
-            properties.put(Constants.PropertyNames.TAGS, String.join(", ", existingTags));
+            properties.put(Constants.PropertyNames.TAGS, String.join(",", existingTags));
         } else {
             throw new RuntimeException("Error occurred during tag add operation");
         }
@@ -1452,6 +1689,66 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     }
 
     /**
+     * If addressed too frequently, WebEx API may respond with 429 code, meaning that the call rate per second was reached.
+     * Normally it would rarely happen due to the request rate limit, but when it does happen - adapter must retry the
+     * attempts of retrieving needed information.
+     * Wait timeout is set based on the Retry-After header value.
+     *
+     * @param url to retrieve data from
+     * @return JsonNode response body
+     * @throws Exception if a communication error occurs
+     */
+    private synchronized JsonNode doGetWithRetry(String url) throws Exception {
+        int retryAttempts = 0;
+        Exception lastError = null;
+        boolean criticalError = false;
+        while (retryAttempts++ < 10 && !devicePaused) {
+            try {
+                return doGet(url, JsonNode.class);
+            } catch (CommandFailureException e) {
+                lastError = e;
+                if (e.getStatusCode() != 429) {
+                    // Might be 401, 403 or any other error code here so the code will just get stuck
+                    // cycling this failed request until it's fixed. So we need to skip this scenario.
+                    criticalError = true;
+                    logger.error(String.format("WebEx API error %s while retrieving %s data", e.getStatusCode(), url), e);
+                    break;
+                }
+            } catch (Exception e) {
+                Throwable rootCause = ExceptionUtils.getRootCause(e);
+                if (ExceptionUtils.hasCause(rootCause, RetryError.class)) {
+                    throw e;
+                }
+                lastError = e;
+                // if service is running, log error
+                if (!devicePaused) {
+                    criticalError = true;
+                    logger.error(String.format("WebEx API error while retrieving %s data", url), e);
+                }
+                break;
+            }
+        }
+
+        if (retryAttempts == 10 && !devicePaused || criticalError) {
+            // if we got here, all 10 attempts failed, or this is a login error that doesn't imply retry attempts
+            if (lastError instanceof CommandFailureException) {
+                int code = ((CommandFailureException)lastError).getStatusCode();
+                if (code == HttpStatus.UNAUTHORIZED.value() || code == HttpStatus.FORBIDDEN.value()) {
+                    saveActiveErrors(code, lastError.getMessage());
+                    return null;
+                }
+                saveActiveErrors(code, lastError.getMessage());
+            } else if (lastError instanceof FailedLoginException) {
+                saveActiveErrors(401, lastError.getMessage());
+                return null;
+            } else {
+                saveActiveErrors(0, "Unknown Error");
+            }
+        }
+        return null;
+    }
+
+    /**
      * Cleanup any active error, that was previously saved
      * */
     private void cleanupActiveErrors() {
@@ -1465,5 +1762,17 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     private void saveActiveErrors(int errorCode, String message) {
         lastErrorCode = errorCode;
         lastErrorMessage = message;
+    }
+
+    /**
+     * Generate current date in ISO8601 String format
+     *
+     * @return String value of ISO8601 date
+     * */
+    private String generateCurrentDateISO8601() {
+        Date currentDate = new Date();
+        ZonedDateTime zonedDateTime = currentDate.toInstant().atZone(java.time.ZoneId.of("UTC"));
+        DateTimeFormatter formatter = DateTimeFormatter.ISO_INSTANT;
+        return formatter.format(zonedDateTime);
     }
 }

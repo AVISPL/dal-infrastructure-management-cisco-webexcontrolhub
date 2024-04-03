@@ -32,15 +32,28 @@ public class WebExControlHubAggregatorCommunicatorTest {
     @Test
     public void testGetMultipleStatisticsWithAppAccess() throws Exception {
         communicator.setDeviceMetaDataRetrievalTimeout(90000);
-        communicator.setIncludePropertyGroups("PeripheralsStatus, PeripheralsConfiguration");
+        communicator.setIncludePropertyGroups("AudioStatus,BluetoothStatus,BookingsStatus,CamerasStatus,CapabilitiesStatus,ConferenceStatus,DiagnosticsStatus,PeripheralsStatus,ProvisioningStatus,\n" +
+                "ProximityStatus,RoomAnalyticsStatus,RoomPresetStatus,SIPStatus,StandbyStatus,SystemUnitStatus,ThousandEyesStatus,TimeStatus,UserInterfaceStatus,\n" +
+                "VideoStatus,WebEngineStatus,WebexStatus,WebRTCStatus,NetworkStatus,NetworkServicesStatus,MicrosoftTeamsStatus,\n" +
+                "AppsConfiguration,AudioConfiguration,AudioInputConfiguration,AudioOutputConfiguration,BluetoothConfiguration,BookingsConfiguration,BYODConfiguration,\n" +
+                "CallHistoryConfiguration,CamerasConfiguration,ConferenceConfiguration,FacilityServiceConfiguration,FilesConfiguration,HttpClientConfiguration,HttpFeedbackConfiguration,LoggingConfiguration,MacrosConfiguration,\n" +
+                "MariConfiguration,MicrosoftTeamsConfiguration,NetworkConfiguration,NetworkServicesConfiguration,PeripheralsConfiguration,PhonebookConfiguration,ProvisioningConfiguration,ProximityConfiguration,\n" +
+                "RoomAnalyticsConfiguration,RoomCleanupConfiguration,RoomSchedulerConfiguration,RTPConfiguration,SecurityConfiguration,SerialPortConfiguration,SIPConfiguration,StandbyConfiguration,SystemUnitConfiguration,ThousandEyesConfiguration,\n" +
+                "TimeConfiguration,UserInterfaceConfiguration,UserManagementConfiguration,VideoConfiguration,VideoInputConfiguration,VideoOutputConfiguration,VoiceControlConfiguration,WebEngineConfiguration,WebexConfiguration,WebRTCConfiguration,ZoomConfiguration");
         //communicator.setTagDeviceFilter("NewTag");
-        communicator.setTypeDeviceFilter("roomdesk");
+     //   communicator.setTypeDeviceFilter("roomdesk");
+        //communicator.setProductDeviceFilter("DX-80, RoomKit, SX-80");
+        communicator.setDeviceRetrievalPageSize(1);
         communicator.init();
         communicator.retrieveMultipleStatistics();
         communicator.getMultipleStatistics();
         Thread.sleep(30000);
         communicator.retrieveMultipleStatistics();
         Thread.sleep(30000);
+        communicator.retrieveMultipleStatistics();
+        Thread.sleep(30000);
+        communicator.retrieveMultipleStatistics();
+
         List<AggregatedDevice> aggregatedDevices = communicator.retrieveMultipleStatistics();
         List<Statistics> statistics = communicator.getMultipleStatistics();
         Assertions.assertNotNull(statistics);
@@ -52,14 +65,12 @@ public class WebExControlHubAggregatorCommunicatorTest {
     public void testControllableConfigurationProperty() throws Exception {
         communicator.init();
         communicator.setIncludePropertyGroups("VideoInput, AudioStatus");
-
         List<AggregatedDevice> statistics = communicator.retrieveMultipleStatistics();
         Assertions.assertNotNull(statistics);
-
         ControllableProperty controllableProperty = new ControllableProperty();
         controllableProperty.setProperty("Zoom#DefaultDomain");
         controllableProperty.setValue(10.0);
-        controllableProperty.setDeviceId("Y2lzY29zcGFyazovL3VybjpURUFNOnVzLXdlc3QtMl9yL0RFVklDRS82Mjg1ZDczNS1jMjk5LTRmY2MtOGM1Zi01NmM1MDlmMjgyNDU=");
+        controllableProperty.setDeviceId("=");
         communicator.controlProperty(controllableProperty);
     }
 
@@ -73,7 +84,7 @@ public class WebExControlHubAggregatorCommunicatorTest {
         ControllableProperty controllableProperty = new ControllableProperty();
         controllableProperty.setProperty("DeviceTags#AddTag");
         controllableProperty.setValue("SomeNewTag1");
-        controllableProperty.setDeviceId("Y2lzY29zcGFyazovL3VybjpURUFNOnVzLXdlc3QtMl9yL0RFVklDRS82Mjg1ZDczNS1jMjk5LTRmY2MtOGM1Zi01NmM1MDlmMjgyNDU=");
+        controllableProperty.setDeviceId("");
         communicator.controlProperty(controllableProperty);
     }
 
@@ -87,7 +98,7 @@ public class WebExControlHubAggregatorCommunicatorTest {
         ControllableProperty controllableProperty = new ControllableProperty();
         controllableProperty.setProperty("DeviceTags#RemoveAll");
         controllableProperty.setValue("SomeNewTag1");
-        controllableProperty.setDeviceId("Y2lzY29zcGFyazovL3VybjpURUFNOnVzLXdlc3QtMl9yL0RFVklDRS82Mjg1ZDczNS1jMjk5LTRmY2MtOGM1Zi01NmM1MDlmMjgyNDU=");
+        controllableProperty.setDeviceId("");
         communicator.controlProperty(controllableProperty);
     }
 
@@ -107,6 +118,10 @@ public class WebExControlHubAggregatorCommunicatorTest {
         communicator.setAuthorizationMode("Bot");
         communicator.setPassword("");
         communicator.init();
+        communicator.retrieveMultipleStatistics();
+        Thread.sleep(30000);
+        communicator.retrieveMultipleStatistics();
+        Thread.sleep(30000);
         communicator.retrieveMultipleStatistics();
         Thread.sleep(30000);
         List<AggregatedDevice> devices = communicator.retrieveMultipleStatistics();
