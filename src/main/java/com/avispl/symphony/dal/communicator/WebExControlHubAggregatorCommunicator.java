@@ -841,9 +841,6 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             if (lastErrorCode == 401 || lastErrorCode == 403) {
                 throw new FailedLoginException("Failed login while retrieving devices list: " + lastErrorMessage);
             }
-//                else {
-//                    throw new RuntimeException(String.format("[%s]Unable retrieve devices list: %s", lastErrorCode, lastErrorMessage));
-//                }
         }
         updateValidRetrieveStatisticsTimestamp();
         aggregatedDevices.values().forEach(aggregatedDevice -> aggregatedDevice.setTimestamp(System.currentTimeMillis()));
