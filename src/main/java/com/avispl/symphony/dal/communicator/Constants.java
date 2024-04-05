@@ -104,6 +104,7 @@ public interface Constants {
         String MIN = "/minimum";
         String MAX = "/maximum";
         String RESULT = "/result";
+        String EDITABLE = "/sources/configured/editability/isEditable";
     }
 
     /**
@@ -122,8 +123,8 @@ public interface Constants {
      * @since 1.0.0
      * */
     interface CallIndicators {
-        String SYSTEM_STATE = "SystemUnitStatus#StateSystem"; //InCall/Initialized/Initializing/Multisite/Sleeping
-        String MS_EXTENSION_IN_CALL = "SystemUnitStatus#ExtensionsMicrosoftInCall";
-        String MS_TEAMS_IN_CALL = "MicrosoftTeamsStatus#CallingInCall";
+        String SYSTEM_STATE = "/SystemUnit/State/System"; //InCall/Initialized/Initializing/Multisite/Sleeping
+        String MS_EXTENSION_IN_CALL = "/SystemUnit/Extensions/Microsoft/InCall";
+        String MS_TEAMS_IN_CALL = "/MicrosoftTeams/Calling/InCall";
     }
 }
