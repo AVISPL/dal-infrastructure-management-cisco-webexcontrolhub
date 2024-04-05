@@ -1293,17 +1293,21 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                     return;
                 }
                 JsonNode valueSpace = configValues.at(Constants.Paths.VALUESPACE);
+                boolean isEditable = configValues.at(Constants.Paths.EDITABLE).asBoolean();
+
                 String configType = valueSpace.at(Constants.Paths.TYPE).asText();
-                if (Constants.Paths.DataType.STRING.equals(configType) && !valueSpace.at(Constants.Paths.ENUM).isMissingNode()) {
-                    List<String> dropdownValues = new ArrayList<>();
-                    valueSpace.at(Constants.Paths.ENUM).elements().forEachRemaining(item -> dropdownValues.add(item.asText()));
-                    advancedControllableProperties.add(createDropdown(symphonyConfigPropertyName, dropdownValues, value));
-                } else if (Constants.Paths.DataType.INTEGER.equals(configType)) {
-                    String min = valueSpace.at(Constants.Paths.MIN).asText();
-                    String max = valueSpace.at(Constants.Paths.MAX).asText();
-                    advancedControllableProperties.add(createSlider(symphonyConfigPropertyName, Float.parseFloat(min), Float.parseFloat(max), Float.parseFloat(value)));
-                } else if (Constants.Paths.DataType.STRING.equals(configType)) {
-                    advancedControllableProperties.add(createText(symphonyConfigPropertyName, value));
+                if (isEditable) {
+                    if (Constants.Paths.DataType.STRING.equals(configType) && !valueSpace.at(Constants.Paths.ENUM).isMissingNode()) {
+                        List<String> dropdownValues = new ArrayList<>();
+                        valueSpace.at(Constants.Paths.ENUM).elements().forEachRemaining(item -> dropdownValues.add(item.asText()));
+                        advancedControllableProperties.add(createDropdown(symphonyConfigPropertyName, dropdownValues, value));
+                    } else if (Constants.Paths.DataType.INTEGER.equals(configType)) {
+                        String min = valueSpace.at(Constants.Paths.MIN).asText();
+                        String max = valueSpace.at(Constants.Paths.MAX).asText();
+                        advancedControllableProperties.add(createSlider(symphonyConfigPropertyName, Float.parseFloat(min), Float.parseFloat(max), Float.parseFloat(value)));
+                    } else if (Constants.Paths.DataType.STRING.equals(configType)) {
+                        advancedControllableProperties.add(createText(symphonyConfigPropertyName, value));
+                    }
                 }
                 properties.put(symphonyConfigPropertyName, value);
             });
@@ -1406,8 +1410,8 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             return;
         }
         try {
-            JsonNode jsonNode = doGetWithRetry(String.format(Constants.URL.XAPI_STATUS, deviceId));
-            if (jsonNode == null) {
+            JsonNode response = doGetWithRetry(String.format(Constants.URL.XAPI_STATUS, deviceId));
+            if (response == null) {
                 if (logger.isDebugEnabled()) {
                     logger.debug("Unable to retrieve device status details.");
                 }
@@ -1418,13 +1422,13 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                 deviceProperties.keySet().removeIf(name -> name.contains(Constants.PropertyNames.STATUS_GROUP));
             }
             Map<String, String> properties = new HashMap<>();
-            JsonNode elements = jsonNode.at(Constants.Paths.RESULT);
+            JsonNode elements = response.at(Constants.Paths.RESULT);
             collectStatusProperties(elements, properties, "");
             deviceProperties.putAll(properties);
 
-            String systemState = properties.get(Constants.CallIndicators.SYSTEM_STATE);
-            String teamsState = properties.get(Constants.CallIndicators.MS_EXTENSION_IN_CALL);
-            String teamsNewState = properties.get(Constants.CallIndicators.MS_TEAMS_IN_CALL);
+            String systemState = elements.at(Constants.CallIndicators.SYSTEM_STATE).asText();
+            String teamsState = elements.at(Constants.CallIndicators.MS_EXTENSION_IN_CALL).asText();
+            String teamsNewState = elements.at(Constants.CallIndicators.MS_TEAMS_IN_CALL).asText();
 
             assignDeviceInCallStatus(aggregatedDevice, Objects.equals(Constants.States.IN_CALL, systemState)
                     || Objects.equals(Constants.States.TRUE, teamsState) || Objects.equals(Constants.States.TRUE, teamsNewState));
