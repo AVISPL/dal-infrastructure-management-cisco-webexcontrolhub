@@ -57,6 +57,8 @@ public interface Constants {
         String ADAPTER_VERSION = "AdapterVersion";
         String ADAPTER_BUILD_DATE = "AdapterBuildDate";
         String ADAPTER_UPTIME = "AdapterUptime";
+        String ADAPTER_UPTIME_MIN = "AdapterUptime(min)";
+        String MONITORING_CYCLE_INTERVAL = "MonitoringCycleInterval(min)";
         String AVAILABLE_PROPERTY_GROUPS = "AvailableDevicesPropertyGroups#";
         String API_CAPABILITIES = "APICapabilities";
         String API_PERMISSIONS = "APIPermissions";
