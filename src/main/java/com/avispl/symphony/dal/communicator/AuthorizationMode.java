@@ -35,7 +35,7 @@ public enum AuthorizationMode {
         if (logger.isDebugEnabled()) {
             logger.debug("Requested authorization mode: " + mode);
         }
-        Optional<AuthorizationMode> selectedAuthMode = Arrays.stream(AuthorizationMode.values()).filter(authorizationMode -> Objects.equals(mode, authorizationMode.mode)).findFirst();
-        return selectedAuthMode.orElse(AuthorizationMode.INTEGRATION);
+        Optional<AuthorizationMode> selectedAuthMode = Arrays.stream(values()).filter(authorizationMode -> Objects.equals(mode, authorizationMode.mode)).findFirst();
+        return selectedAuthMode.orElse(INTEGRATION);
     }
 }
