@@ -1003,7 +1003,10 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         List<AggregatedDevice> extractedDevices = new ArrayList<>();
         listWebExDevices(extractedDevices, deviceListUrl.toString(), 0);
 
-        extractedDevices.forEach(aggregatedDevice -> aggregatedDevice.setDeviceName(aggregatedDevice.getDeviceName() + ": " + aggregatedDevice.getDeviceModel()));
+        extractedDevices.forEach(aggregatedDevice -> {
+            aggregatedDevice.setDeviceName(aggregatedDevice.getDeviceName() + ": " + aggregatedDevice.getDeviceModel());
+            configureAggregatedDeviceCatalogData(aggregatedDevice);
+        });
         return extractedDevices;
     }
 
@@ -1556,6 +1559,27 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                     collectStatusProperties(jsonNode.get(fieldName), properties, parentNodeName + "[" + jsonNode.at(Constants.Paths.ID).asText() + "]" + fieldName);
                 }
             }
+        }
+    }
+
+    /**
+     * Configure device's catalog information according to the values listed in {@link Constants.Catalog#CATALOG_ENTRIES}
+     *
+     * @param aggregatedDevice a device to adjust catalog data for
+     * */
+    private void configureAggregatedDeviceCatalogData(AggregatedDevice aggregatedDevice) {
+        String category = aggregatedDevice.getCategory().toLowerCase();
+        String manufacturer = aggregatedDevice.getDeviceMake().toLowerCase();
+
+        if (Constants.Catalog.CATALOG_ENTRIES.containsKey(category)) {
+            String newCategory = Constants.Catalog.CATALOG_ENTRIES.get(category);
+            aggregatedDevice.setCategory(newCategory);
+            if (newCategory.equals("Single Codecs")) {
+                aggregatedDevice.setType("Codecs");
+            }
+        }
+        if (Constants.Catalog.CATALOG_ENTRIES.containsKey(manufacturer)) {
+            aggregatedDevice.setDeviceMake(Constants.Catalog.CATALOG_ENTRIES.get(manufacturer));
         }
     }
 
