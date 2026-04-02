@@ -3,7 +3,6 @@
  */
 package com.avispl.symphony.dal.communicator;
 
-import java.util.HashMap;
 import java.util.Map;
 
 /**
