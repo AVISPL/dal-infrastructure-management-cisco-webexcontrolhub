@@ -148,4 +148,67 @@ public interface Constants {
                 Map.entry("roomdesk", "Single Codecs")
         );
     }
+
+    /**
+     * Model-specific mapping rules, applied on top of the raw device model name (the {@code product}
+     * field returned by the WebEx API, e.g. "Cisco Desk Pro") to normalize the device's model name,
+     * manufacturer, type and category values, so they are consistent regardless of how WebEx reports
+     * the model.
+     *
+     * @author Ritik Madaan
+     * @since 1.0.2
+     * */
+    interface ModelCatalog {
+
+        /**
+         * A single model mapping rule entry: normalized model name, manufacturer, type and category
+         * to apply for a given raw (external/API) device name.
+         * */
+        class ModelMappingEntry {
+            private final String modelName;
+            private final String manufacturer;
+            private final String type;
+            private final String category;
+
+            public ModelMappingEntry(String modelName, String manufacturer, String type, String category) {
+                this.modelName = modelName;
+                this.manufacturer = manufacturer;
+                this.type = type;
+                this.category = category;
+            }
+
+            public String getModelName() {
+                return modelName;
+            }
+
+            public String getManufacturer() {
+                return manufacturer;
+            }
+
+            public String getType() {
+                return type;
+            }
+
+            public String getCategory() {
+                return category;
+            }
+        }
+
+        /**
+         * Mapping rules keyed by lower-cased raw/external device name (the value of the {@code product}
+         * field returned by the WebEx API for a device, e.g. "cisco desk pro"), mapping to the normalized
+         * model name we want to publish.
+         * */
+        Map<String, ModelMappingEntry> MODEL_ENTRIES = Map.ofEntries(
+                Map.entry("cisco desk pro", new ModelMappingEntry("Webex Desk Pro", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco precision 60", new ModelMappingEntry("Precision 60", "Cisco", "AV Devices", "Camera")),
+                Map.entry("cisco quad camera", new ModelMappingEntry("Quad Camera", "Cisco", "AV Devices", "Camera")),
+                Map.entry("cisco room kit mini", new ModelMappingEntry("WebEx Room Kit Mini", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco room kit plus", new ModelMappingEntry("WebEx Room Kit Plus", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco room kit pro", new ModelMappingEntry("WebEx Room Kit Pro", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco codec plus", new ModelMappingEntry("WebEx Codec Plus", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco codec pro", new ModelMappingEntry("WebEx Codec Pro", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco room navigator", new ModelMappingEntry("Navigator", "Cisco", "AV Devices", "Touch Screens"))
+        );
+    }
 }

@@ -1004,8 +1004,9 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         listWebExDevices(extractedDevices, deviceListUrl.toString(), 0);
 
         extractedDevices.forEach(aggregatedDevice -> {
-            aggregatedDevice.setDeviceName(aggregatedDevice.getDeviceName() + ": " + aggregatedDevice.getDeviceModel());
             configureAggregatedDeviceCatalogData(aggregatedDevice);
+            applyDeviceModelMapping(aggregatedDevice);
+            aggregatedDevice.setDeviceName(aggregatedDevice.getDeviceName() + ": " + aggregatedDevice.getDeviceModel());
         });
         return extractedDevices;
     }
@@ -1581,6 +1582,30 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         if (Constants.Catalog.CATALOG_ENTRIES.containsKey(manufacturer)) {
             aggregatedDevice.setDeviceMake(Constants.Catalog.CATALOG_ENTRIES.get(manufacturer));
         }
+    }
+
+    /**
+     * Apply model-specific mapping rules ({@link Constants.ModelCatalog#MODEL_ENTRIES}) to the device's
+     * data, based on its raw/external device name (WebEx API's {@code product} field, exposed as
+     * {@code deviceModel}, e.g. "Cisco Desk Pro"). When a rule matches, the device's model name,
+     * manufacturer, type and category are normalized/overridden to the values defined for that model,
+     * taking precedence over the generic category-based mapping.
+     *
+     * @param aggregatedDevice a device to apply model mapping rules for
+     * */
+    private void applyDeviceModelMapping(AggregatedDevice aggregatedDevice) {
+        String rawModel = aggregatedDevice.getDeviceModel();
+        if (rawModel == null || rawModel.isEmpty()) {
+            return;
+        }
+        Constants.ModelCatalog.ModelMappingEntry entry = Constants.ModelCatalog.MODEL_ENTRIES.get(rawModel.toLowerCase());
+        if (entry == null) {
+            return;
+        }
+        aggregatedDevice.setDeviceModel(entry.getModelName());
+        aggregatedDevice.setDeviceMake(entry.getManufacturer());
+        aggregatedDevice.setType(entry.getType());
+        aggregatedDevice.setCategory(entry.getCategory());
     }
 
     /**
