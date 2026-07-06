@@ -1585,11 +1585,12 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     }
 
     /**
-     * Apply model-specific mapping rules ({@link Constants.ModelCatalog#MODEL_ENTRIES}) to the device's
+     * Apply model-specific mapping rules ({@link Constants.ModelCatalog#resolve(String)}) to the device's
      * data, based on its raw/external device name (WebEx API's {@code product} field, exposed as
-     * {@code deviceModel}, e.g. "Cisco Desk Pro"). When a rule matches, the device's model name,
-     * manufacturer, type and category are normalized/overridden to the values defined for that model,
-     * taking precedence over the generic category-based mapping.
+     * {@code deviceModel}, e.g. "Cisco Desk Pro"). When a rule matches (either an exact match, or a
+     * prefix match against a known base model to tolerate hardware/firmware revision suffixes like
+     * "G2"), the device's model name, manufacturer, type and category are normalized/overridden to the
+     * values defined for that model, taking precedence over the generic category-based mapping.
      *
      * @param aggregatedDevice a device to apply model mapping rules for
      * */
@@ -1598,7 +1599,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         if (rawModel == null || rawModel.isEmpty()) {
             return;
         }
-        Constants.ModelCatalog.ModelMappingEntry entry = Constants.ModelCatalog.MODEL_ENTRIES.get(rawModel.toLowerCase());
+        Constants.ModelCatalog.ModelMappingEntry entry = Constants.ModelCatalog.resolve(rawModel);
         if (entry == null) {
             return;
         }

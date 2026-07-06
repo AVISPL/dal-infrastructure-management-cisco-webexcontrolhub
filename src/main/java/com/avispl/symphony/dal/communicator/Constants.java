@@ -210,5 +210,33 @@ public interface Constants {
                 Map.entry("cisco codec pro", new ModelMappingEntry("WebEx Codec Pro", "Cisco", "Codecs", "Single Codecs")),
                 Map.entry("cisco room navigator", new ModelMappingEntry("Navigator", "Cisco", "AV Devices", "Touch Screens"))
         );
+
+        /**
+         * Resolve a mapping entry for the given raw/external device name returned by the WebEx API.
+         * First attempts an exact (case-insensitive) match against {@link #MODEL_ENTRIES}. If none is
+         * found, falls back to prefix matching, so a hardware/firmware revision suffix appended by WebEx
+         * on top of a known base name (e.g. "Cisco Codec Pro G2", "Cisco Desk Pro G2") still resolves to
+         * that base model's mapping rule, without requiring a dedicated map entry for every new variant.
+         *
+         * @param rawModelName the raw device model/product name as returned by the WebEx API
+         * @return the matching {@link ModelMappingEntry}, or {@code null} if no rule applies
+         * */
+        static ModelMappingEntry resolve(String rawModelName) {
+            if (rawModelName == null || rawModelName.isEmpty()) {
+                return null;
+            }
+            String normalized = rawModelName.toLowerCase().trim();
+
+            ModelMappingEntry entry = MODEL_ENTRIES.get(normalized);
+            if (entry != null) {
+                return entry;
+            }
+            for (Map.Entry<String, ModelMappingEntry> candidate : MODEL_ENTRIES.entrySet()) {
+                if (normalized.startsWith(candidate.getKey() + " ")) {
+                    return candidate.getValue();
+                }
+            }
+            return null;
+        }
     }
 }
