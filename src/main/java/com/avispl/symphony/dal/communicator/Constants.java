@@ -208,7 +208,10 @@ public interface Constants {
                 Map.entry("cisco room kit pro", new ModelMappingEntry("WebEx Room Kit Pro", "Cisco", "Codecs", "Single Codecs")),
                 Map.entry("cisco codec plus", new ModelMappingEntry("WebEx Codec Plus", "Cisco", "Codecs", "Single Codecs")),
                 Map.entry("cisco codec pro", new ModelMappingEntry("WebEx Codec Pro", "Cisco", "Codecs", "Single Codecs")),
-                Map.entry("cisco room navigator", new ModelMappingEntry("Navigator", "Cisco", "AV Devices", "Touch Screens"))
+                Map.entry("cisco room navigator", new ModelMappingEntry("Navigator", "Cisco", "AV Devices", "Touch Screens")),
+                Map.entry("cisco desk pro g2", new ModelMappingEntry("Webex Desk Pro G2", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco codec pro g2", new ModelMappingEntry("WebEx Codec Pro G2", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco room kit pro g2", new ModelMappingEntry("WebEx Room Kit Pro G2", "Cisco", "Codecs", "Single Codecs"))
         );
 
         /**
