@@ -148,4 +148,98 @@ public interface Constants {
                 Map.entry("roomdesk", "Single Codecs")
         );
     }
+
+    /**
+     * Model-specific mapping rules, applied on top of the raw device model name (the {@code product}
+     * field returned by the WebEx API, e.g. "Cisco Desk Pro") to normalize the device's model name,
+     * manufacturer, type and category values, so they are consistent regardless of how WebEx reports
+     * the model.
+     *
+     * @author Ritik Madaan
+     * @since 1.0.2
+     * */
+    interface ModelCatalog {
+
+        /**
+         * A single model mapping rule entry: normalized model name, manufacturer, type and category
+         * to apply for a given raw (external/API) device name.
+         * */
+        class ModelMappingEntry {
+            private final String modelName;
+            private final String manufacturer;
+            private final String type;
+            private final String category;
+
+            public ModelMappingEntry(String modelName, String manufacturer, String type, String category) {
+                this.modelName = modelName;
+                this.manufacturer = manufacturer;
+                this.type = type;
+                this.category = category;
+            }
+
+            public String getModelName() {
+                return modelName;
+            }
+
+            public String getManufacturer() {
+                return manufacturer;
+            }
+
+            public String getType() {
+                return type;
+            }
+
+            public String getCategory() {
+                return category;
+            }
+        }
+
+        /**
+         * Mapping rules keyed by lower-cased raw/external device name (the value of the {@code product}
+         * field returned by the WebEx API for a device, e.g. "cisco desk pro"), mapping to the normalized
+         * model name we want to publish.
+         * */
+        Map<String, ModelMappingEntry> MODEL_ENTRIES = Map.ofEntries(
+                Map.entry("cisco desk pro", new ModelMappingEntry("Webex Desk Pro", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco precision 60", new ModelMappingEntry("Precision 60", "Cisco", "AV Devices", "Camera")),
+                Map.entry("cisco quad camera", new ModelMappingEntry("Quad Camera", "Cisco", "AV Devices", "Camera")),
+                Map.entry("cisco room kit mini", new ModelMappingEntry("WebEx Room Kit Mini", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco room kit plus", new ModelMappingEntry("WebEx Room Kit Plus", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco room kit pro", new ModelMappingEntry("WebEx Room Kit Pro", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco codec plus", new ModelMappingEntry("WebEx Codec Plus", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco codec pro", new ModelMappingEntry("WebEx Codec Pro", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco room navigator", new ModelMappingEntry("Navigator", "Cisco", "AV Devices", "Touch Screens")),
+                Map.entry("cisco desk pro g2", new ModelMappingEntry("Webex Desk Pro G2", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco codec pro g2", new ModelMappingEntry("WebEx Codec Pro G2", "Cisco", "Codecs", "Single Codecs")),
+                Map.entry("cisco room kit pro g2", new ModelMappingEntry("WebEx Room Kit Pro G2", "Cisco", "Codecs", "Single Codecs"))
+        );
+
+        /**
+         * Resolve a mapping entry for the given raw/external device name returned by the WebEx API.
+         * First attempts an exact (case-insensitive) match against {@link #MODEL_ENTRIES}. If none is
+         * found, falls back to prefix matching, so a hardware/firmware revision suffix appended by WebEx
+         * on top of a known base name (e.g. "Cisco Codec Pro G2", "Cisco Desk Pro G2") still resolves to
+         * that base model's mapping rule, without requiring a dedicated map entry for every new variant.
+         *
+         * @param rawModelName the raw device model/product name as returned by the WebEx API
+         * @return the matching {@link ModelMappingEntry}, or {@code null} if no rule applies
+         * */
+        static ModelMappingEntry resolve(String rawModelName) {
+            if (rawModelName == null || rawModelName.isEmpty()) {
+                return null;
+            }
+            String normalized = rawModelName.toLowerCase().trim();
+
+            ModelMappingEntry entry = MODEL_ENTRIES.get(normalized);
+            if (entry != null) {
+                return entry;
+            }
+            for (Map.Entry<String, ModelMappingEntry> candidate : MODEL_ENTRIES.entrySet()) {
+                if (normalized.startsWith(candidate.getKey() + " ")) {
+                    return candidate.getValue();
+                }
+            }
+            return null;
+        }
+    }
 }
