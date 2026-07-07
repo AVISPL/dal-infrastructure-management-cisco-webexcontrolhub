@@ -35,7 +35,7 @@ public enum PingMode {
         if (logger.isDebugEnabled()) {
             logger.debug("Requested PING mode: " + mode);
         }
-        Optional<PingMode> selectedAuthMode = Arrays.stream(PingMode.values()).filter(authorizationMode -> Objects.equals(mode, authorizationMode.mode)).findFirst();
-        return selectedAuthMode.orElse(PingMode.ICMP);
+        Optional<PingMode> selectedAuthMode = Arrays.stream(values()).filter(authorizationMode -> Objects.equals(mode, authorizationMode.mode)).findFirst();
+        return selectedAuthMode.orElse(ICMP);
     }
 }

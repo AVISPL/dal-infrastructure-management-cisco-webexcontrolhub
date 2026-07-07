@@ -21,12 +21,12 @@ public class WebExControlHubAggregatorCommunicatorTest {
     @BeforeEach
     public void setUp() throws Exception {
         communicator = new WebExControlHubAggregatorCommunicator();
-        communicator.setHost("webexapis.com");
+        communicator.setHost("");
         communicator.setLogin("");
         communicator.setPassword("");
-        communicator.setAuthorizationMode("Integration");
+        communicator.setAuthorizationMode("");
         communicator.setRefreshToken("");
-        communicator.setProtocol("https");
+        communicator.setProtocol("");
     }
 
     @Test

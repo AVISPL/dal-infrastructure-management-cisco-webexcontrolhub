@@ -3,6 +3,48 @@
  */
 package com.avispl.symphony.dal.communicator;
 
+import static com.avispl.symphony.dal.util.ControllablePropertyFactory.createDropdown;
+import static com.avispl.symphony.dal.util.ControllablePropertyFactory.createSlider;
+import static com.avispl.symphony.dal.util.ControllablePropertyFactory.createText;
+import static java.util.stream.Collectors.toList;
+
+import java.io.IOException;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpRequest;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.client.ClientHttpRequestExecution;
+import org.springframework.http.client.ClientHttpRequestInterceptor;
+import org.springframework.http.client.ClientHttpResponse;
+import org.springframework.util.CollectionUtils;
+import org.springframework.web.client.RestTemplate;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import javax.security.auth.login.FailedLoginException;
+import org.apache.commons.lang3.BooleanUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
+
 import com.avispl.symphony.api.dal.control.Controller;
 import com.avispl.symphony.api.dal.dto.control.AdvancedControllableProperty;
 import com.avispl.symphony.api.dal.dto.control.ControllableProperty;
@@ -16,36 +58,10 @@ import com.avispl.symphony.api.dal.monitor.aggregator.Aggregator;
 import com.avispl.symphony.dal.aggregator.parser.AggregatedDeviceProcessor;
 import com.avispl.symphony.dal.aggregator.parser.PropertiesMapping;
 import com.avispl.symphony.dal.aggregator.parser.PropertiesMappingParser;
+import com.avispl.symphony.dal.communicator.Constants.PropertyNames;
 import com.avispl.symphony.dal.communicator.data.AuthorizationResponse;
 import com.avispl.symphony.dal.communicator.error.RetryError;
 import com.avispl.symphony.dal.util.StringUtils;
-import com.fasterxml.jackson.databind.JsonNode;
-import org.apache.commons.lang3.BooleanUtils;
-import org.apache.commons.lang3.exception.ExceptionUtils;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.HttpRequest;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.client.ClientHttpRequestExecution;
-import org.springframework.http.client.ClientHttpRequestInterceptor;
-import org.springframework.http.client.ClientHttpResponse;
-import org.springframework.util.CollectionUtils;
-import org.springframework.web.client.RestTemplate;
-
-import javax.security.auth.login.FailedLoginException;
-import java.io.IOException;
-import java.net.ConnectException;
-import java.net.Socket;
-import java.net.SocketTimeoutException;
-import java.net.UnknownHostException;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.stream.Collectors;
-
-import static com.avispl.symphony.dal.util.ControllablePropertyFactory.*;
-import static java.util.stream.Collectors.toList;
 
 /**
  * Communicator for WebEx ControlHub API
@@ -71,9 +87,9 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         @Override
         public ClientHttpResponse intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution) throws IOException {
             ClientHttpResponse response = execution.execute(request, body);
-            if (response.getRawStatusCode() == 429) {
+            if (response.getStatusCode().value() == 429) {
                 List<String> retryAfterSeconds = response.getHeaders().get("Retry-After");
-                if (retryAfterSeconds != null && !retryAfterSeconds.isEmpty()) {
+                if (!retryAfterSeconds.isEmpty()) {
                     response.close();
                     throw new RetryError(Long.parseLong(retryAfterSeconds.get(0)));
                 }
@@ -102,12 +118,11 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             logDebugMessage("Entering device data loader active stage.");
             mainloop:
             while (inProgress) {
-                long startCycle = System.currentTimeMillis();
                 try {
                     try {
                         TimeUnit.MILLISECONDS.sleep(500);
                     } catch (InterruptedException e) {
-                        // Ignore for now
+                        logger.info(String.format("Sleep for 0.5 second was interrupted with error message: %s", e.getMessage()));
                     }
 
                     if (!inProgress) {
@@ -121,6 +136,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                         logDebugMessage("The device communicator is paused, data collector is not active.");
                         continue mainloop;
                     }
+                    long startCycle = System.currentTimeMillis();
                     try {
                         logDebugMessage("Fetching devices list.");
                         fetchDevicesList();
@@ -148,7 +164,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                         try {
                             TimeUnit.MILLISECONDS.sleep(1000);
                         } catch (InterruptedException e) {
-                            //
+                            logger.info(String.format("Sleep for 1 second was interrupted with error message: %s", e.getMessage()));
                         }
                     }
 
@@ -211,12 +227,16 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                         devicesExecutionPool.removeIf(Future::isDone);
                     } while (!devicesExecutionPool.isEmpty());
 
-                    // We don't want to fetch devices statuses too often, so by default it's currentTime + 30s
+                    // We don't want to fetch devices statuses too often, so by default it's currentTime + 60s
                     // otherwise - the variable is reset by the retrieveMultipleStatistics() call, which
                     // launches devices detailed statistics collection
-                    nextDevicesCollectionIterationTimestamp = System.currentTimeMillis() + 30000;
-
-                    lastMonitoringCycleDuration = (System.currentTimeMillis() - startCycle)/1000;
+                    try {
+                        nextDevicesCollectionIterationTimestamp = System.currentTimeMillis() + (getMonitoringRate() * 60000L);
+                    } catch (NoSuchMethodError nsme) {
+                        nextDevicesCollectionIterationTimestamp = System.currentTimeMillis() + 60000L;
+                        logger.warn("Unsupported feature: getMonitoringRate isn't available on current Cloud Connector version.", nsme);
+                    }
+                    lastMonitoringCycleDuration = Math.max((System.currentTimeMillis() - startCycle) / 1000, 1L);
                     logDebugMessage("Finished collecting devices statistics cycle at " + new Date() + ", total duration: " + lastMonitoringCycleDuration);
                 } catch(Exception e) {
                     logger.error("Unexpected error occurred during main device collection cycle", e);
@@ -369,7 +389,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     /**
      * How much time last monitoring cycle took to finish
      * */
-    private Long lastMonitoringCycleDuration;
+    private Long lastMonitoringCycleDuration = 1L;
 
     private int lastErrorCode = 0;
     private String lastErrorMessage;
@@ -823,7 +843,14 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         statistics.put(Constants.PropertyNames.AUTHORIZATION_MODE, authorizationMode.name());
         statistics.put(Constants.PropertyNames.ADAPTER_VERSION, adapterProperties.getProperty("aggregator.version"));
         statistics.put(Constants.PropertyNames.ADAPTER_BUILD_DATE, adapterProperties.getProperty("aggregator.build.date"));
-        statistics.put(Constants.PropertyNames.ADAPTER_UPTIME, normalizeUptime((System.currentTimeMillis() - adapterInitializationTimestamp) / 1000));
+        long adapterUptime = System.currentTimeMillis() - adapterInitializationTimestamp;
+        statistics.put(Constants.PropertyNames.ADAPTER_UPTIME, normalizeUptime(adapterUptime / 1000));
+        statistics.put(PropertyNames.ADAPTER_UPTIME_MIN, String.valueOf(adapterUptime / (1000 * 60)));
+        try {
+            statistics.put(Constants.PropertyNames.MONITORING_CYCLE_INTERVAL, String.valueOf(this.getMonitoringRate()));
+        } catch (NoSuchMethodError nsme) {
+            logger.warn("Unsupported feature: getMonitoringRate isn't available on current Cloud Connector version.", nsme);
+        }
 
         for(String availableGroup: availablePropertyGroups) {
             statistics.put(Constants.PropertyNames.AVAILABLE_PROPERTY_GROUPS + availableGroup, includePropertyGroups.contains(availableGroup) ? "Enabled" : "Disabled");
@@ -837,59 +864,13 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
 
     @Override
     public List<AggregatedDevice> retrieveMultipleStatistics() throws FailedLoginException {
-        if (lastErrorCode != 0) {
-            if (lastErrorCode == 401 || lastErrorCode == 403) {
+        if (lastErrorCode != 0 && (lastErrorCode == 401 || lastErrorCode == 403)) {
                 throw new FailedLoginException("Failed login while retrieving devices list: " + lastErrorMessage);
             }
-        }
+
         updateValidRetrieveStatisticsTimestamp();
         aggregatedDevices.values().forEach(aggregatedDevice -> aggregatedDevice.setTimestamp(System.currentTimeMillis()));
         return new ArrayList<>(aggregatedDevices.values());
-    }
-
-    @Override
-    public int ping() throws Exception {
-        if (pingMode == PingMode.ICMP) {
-            return super.ping();
-        } else if (pingMode == PingMode.TCP) {
-            if (isInitialized()) {
-                long pingResultTotal = 0L;
-
-                for (int i = 0; i < this.getPingAttempts(); i++) {
-                    long startTime = System.currentTimeMillis();
-
-                    try (Socket puSocketConnection = new Socket(this.host, this.getPort())) {
-                        puSocketConnection.setSoTimeout(this.getPingTimeout());
-                        if (puSocketConnection.isConnected()) {
-                            long pingResult = System.currentTimeMillis() - startTime;
-                            pingResultTotal += pingResult;
-                            if (this.logger.isTraceEnabled()) {
-                                this.logger.trace(String.format("PING OK: Attempt #%s to connect to %s on port %s succeeded in %s ms", i + 1, host, this.getPort(), pingResult));
-                            }
-                        } else {
-                            if (this.logger.isDebugEnabled()) {
-                                logger.debug(String.format("PING DISCONNECTED: Connection to %s did not succeed within the timeout period of %sms", host, this.getPingTimeout()));
-                            }
-                            return this.getPingTimeout();
-                        }
-                    } catch (SocketTimeoutException | ConnectException tex) {
-                        throw new SocketTimeoutException("Socket connection timed out");
-                    } catch (UnknownHostException tex) {
-                        throw new SocketTimeoutException("Socket connection timed out" + tex.getMessage());
-                    } catch (Exception e) {
-                        if (this.logger.isWarnEnabled()) {
-                            this.logger.warn(String.format("PING TIMEOUT: Connection to %s did not succeed, UNKNOWN ERROR %s: ", host, e.getMessage()));
-                        }
-                        return this.getPingTimeout();
-                    }
-                }
-                return Math.max(1, Math.toIntExact(pingResultTotal / this.getPingAttempts()));
-            } else {
-                throw new IllegalStateException("Cannot use device class without calling init() first");
-            }
-        } else {
-            throw new IllegalArgumentException("Unknown PING Mode: " + pingMode);
-        }
     }
 
     /**
@@ -1022,7 +1003,10 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         List<AggregatedDevice> extractedDevices = new ArrayList<>();
         listWebExDevices(extractedDevices, deviceListUrl.toString(), 0);
 
-        extractedDevices.forEach(aggregatedDevice -> aggregatedDevice.setDeviceName(aggregatedDevice.getDeviceName() + ": " + aggregatedDevice.getDeviceModel()));
+        extractedDevices.forEach(aggregatedDevice -> {
+            aggregatedDevice.setDeviceName(aggregatedDevice.getDeviceName() + ": " + aggregatedDevice.getDeviceModel());
+            configureAggregatedDeviceCatalogData(aggregatedDevice);
+        });
         return extractedDevices;
     }
 
@@ -1068,7 +1052,6 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             if (logger.isDebugEnabled()) {
                 logger.debug("Last page of the output is reached, finishing collecting devices list");
             }
-            return;
         } else {
             listWebExDevices(aggregatedDevices, baseUrl, start + deviceRetrievalPageSize + 1);
         }
@@ -1580,15 +1563,35 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     }
 
     /**
-     * Uptime is received in seconds, need to normalize it and make it human readable, like
-     * 1 day(s) 5 hour(s) 12 minute(s) 55 minute(s)
+     * Configure device's catalog information according to the values listed in {@link Constants.Catalog#CATALOG_ENTRIES}
+     *
+     * @param aggregatedDevice a device to adjust catalog data for
+     * */
+    private void configureAggregatedDeviceCatalogData(AggregatedDevice aggregatedDevice) {
+        String category = aggregatedDevice.getCategory().toLowerCase();
+        String manufacturer = aggregatedDevice.getDeviceMake().toLowerCase();
+
+        if (Constants.Catalog.CATALOG_ENTRIES.containsKey(category)) {
+            String newCategory = Constants.Catalog.CATALOG_ENTRIES.get(category);
+            aggregatedDevice.setCategory(newCategory);
+            if (newCategory.equals("Single Codecs")) {
+                aggregatedDevice.setType("Codecs");
+            }
+        }
+        if (Constants.Catalog.CATALOG_ENTRIES.containsKey(manufacturer)) {
+            aggregatedDevice.setDeviceMake(Constants.Catalog.CATALOG_ENTRIES.get(manufacturer));
+        }
+    }
+
+    /**
+     * Uptime is received in seconds, need to normalize it and make it human-readable, like 1 d 5 hr 12 min 55 sec
      * Incoming parameter is may have a decimal point, so in order to safely process this - it's rounded first.
      * We don't need to add a segment of time if it's 0.
      *
      * @param uptimeSeconds value in seconds
-     * @return string value of format 'x day(s) x hour(s) x minute(s) x minute(s)'
+     * @return string value of format 'x d x hr x min x sec'
      */
-    private String normalizeUptime(long uptimeSeconds) {
+    public static String normalizeUptime(long uptimeSeconds) {
         StringBuilder normalizedUptime = new StringBuilder();
 
         long seconds = uptimeSeconds % 60;
@@ -1597,16 +1600,16 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         long days = uptimeSeconds / 86400;
 
         if (days > 0) {
-            normalizedUptime.append(days).append(" day(s) ");
+            normalizedUptime.append(days).append(" d ");
         }
         if (hours > 0) {
-            normalizedUptime.append(hours).append(" hour(s) ");
+            normalizedUptime.append(hours).append(" hr ");
         }
         if (minutes > 0) {
-            normalizedUptime.append(minutes).append(" minute(s) ");
+            normalizedUptime.append(minutes).append(" min ");
         }
-        if (seconds > 0) {
-            normalizedUptime.append(seconds).append(" second(s)");
+        if (seconds > 0 || normalizedUptime.isEmpty()) {
+            normalizedUptime.append(seconds).append(" sec");
         }
         return normalizedUptime.toString().trim();
     }

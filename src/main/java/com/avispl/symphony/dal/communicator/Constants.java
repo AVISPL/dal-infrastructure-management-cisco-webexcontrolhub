@@ -3,6 +3,8 @@
  */
 package com.avispl.symphony.dal.communicator;
 
+import java.util.Map;
+
 /**
  * Adapter constants storage
  * @author Maksym Rossiitsev
@@ -57,6 +59,8 @@ public interface Constants {
         String ADAPTER_VERSION = "AdapterVersion";
         String ADAPTER_BUILD_DATE = "AdapterBuildDate";
         String ADAPTER_UPTIME = "AdapterUptime";
+        String ADAPTER_UPTIME_MIN = "AdapterUptime(min)";
+        String MONITORING_CYCLE_INTERVAL = "MonitoringCycleInterval(min)";
         String AVAILABLE_PROPERTY_GROUPS = "AvailableDevicesPropertyGroups#";
         String API_CAPABILITIES = "APICapabilities";
         String API_PERMISSIONS = "APIPermissions";
@@ -126,5 +130,22 @@ public interface Constants {
         String SYSTEM_STATE = "/SystemUnit/State/System"; //InCall/Initialized/Initializing/Multisite/Sleeping
         String MS_EXTENSION_IN_CALL = "/SystemUnit/Extensions/Microsoft/InCall";
         String MS_TEAMS_IN_CALL = "/MicrosoftTeams/Calling/InCall";
+    }
+
+    /**
+     * Catalog entries fixtures, to make aggregated devices onboarding process a bit more streamlined
+     * @author Maksym.Rossiytsev
+     * @since 1.0.1
+     * */
+    interface Catalog {
+        Map<String, String> CATALOG_ENTRIES = Map.ofEntries(
+                Map.entry("camera", "Camera"),
+                Map.entry("monitor", "Monitors"),
+                Map.entry("controlsystem", "Switchers"),
+                Map.entry("microphone", "Microphone"),
+                Map.entry("accessory", "Touch Screens"),
+                Map.entry("cisco", "Cisco"),
+                Map.entry("roomdesk", "Single Codecs")
+        );
     }
 }
