@@ -40,6 +40,7 @@ public interface Constants {
          * }
          * */
         String DEVICE_CONTROL = "xapi/command/"; // if xApi is supported
+        String XAPI_BOOT_COMMAND = "SystemUnit.Boot";
         String XAPI_STATUS = "xapi/status?deviceId=%s&name=*";
         String DEVICE_TAGS = "devices/"; //requires device id
     }
@@ -52,6 +53,9 @@ public interface Constants {
     interface PropertyNames {
         String ADD_TAG = "DeviceTags#AddTag";
         String REMOVE_TAG = "DeviceTags#RemoveAll";
+        String REBOOT = "Reboot";
+        String API_CAPABILITIES = "APICapabilities";
+        String API_PERMISSIONS = "APIPermissions";
         String TAGS = "DeviceTags#Tags";
         String TOTAL_DEVICES = "MonitoredDevicesTotal";
         String LAST_CYCLE_DURATION = "LastMonitoringCycleDuration(s)";
@@ -62,8 +66,6 @@ public interface Constants {
         String ADAPTER_UPTIME_MIN = "AdapterUptime(min)";
         String MONITORING_CYCLE_INTERVAL = "MonitoringCycleInterval(min)";
         String AVAILABLE_PROPERTY_GROUPS = "AvailableDevicesPropertyGroups#";
-        String API_CAPABILITIES = "APICapabilities";
-        String API_PERMISSIONS = "APIPermissions";
         String STATUS = "Status";
         String STATUS_GROUP = "Status#";
         String LAST_UPDATED = "LastUpdated";

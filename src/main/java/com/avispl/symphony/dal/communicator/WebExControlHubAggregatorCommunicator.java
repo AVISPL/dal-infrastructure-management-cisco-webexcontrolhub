@@ -69,6 +69,7 @@ import com.avispl.symphony.dal.util.StringUtils;
  * - Devices metadata
  * - Device configuration
  * - xAPI status, if supported by the device
+ * - Device reboot via xAPI command, if supported by the device
  * - Devices filtering (tag, product and type based)
  * - Property groups filtering
  *
@@ -783,6 +784,9 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             case Constants.PropertyNames.REMOVE_TAG:
                 removeDeviceTags(deviceId);
                 break;
+            case Constants.PropertyNames.REBOOT:
+                rebootDevice(deviceId);
+                break;
             default:
                 updateDeviceConfiguration(deviceId, propertyName, propertyValue);
                 break;
@@ -897,6 +901,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             String deviceId = aggregatedDevice.getDeviceId();
             if (!aggregatedDevices.containsKey(deviceId)) {
                 aggregatedDevices.put(deviceId, aggregatedDevice);
+                updateRebootControl(aggregatedDevice);
             } else {
                 AggregatedDevice existingAggregatedDevice = aggregatedDevices.get(deviceId);
                 Map<String, String> deviceProperties = existingAggregatedDevice.getProperties();
@@ -905,6 +910,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                 existingAggregatedDevice.setDeviceOnline(aggregatedDevice.getDeviceOnline());
                 existingAggregatedDevice.setTimestamp(System.currentTimeMillis());
             }
+            updateRebootControl(aggregatedDevices.get(deviceId));
         }
         logDebugMessage("Fetched devices list: " + aggregatedDevices);
         cleanupActiveErrors();
@@ -1228,10 +1234,10 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
 
         Map<String, String> properties = aggregatedDevice.getProperties();
         List<AdvancedControllableProperty> existingControls = aggregatedDevice.getControllableProperties();
-        List<AdvancedControllableProperty> tagControls = existingControls.stream().filter(advancedControllableProperty ->
-                advancedControllableProperty.getName().startsWith(Constants.PropertyNames.DEVICE_TAGS)).collect(toList());
+        List<AdvancedControllableProperty> baseControls = existingControls.stream().filter(advancedControllableProperty ->
+                isBaseControl(advancedControllableProperty.getName())).collect(toList());
 
-        List<AdvancedControllableProperty> advancedControllableProperties = new ArrayList<>(tagControls);
+        List<AdvancedControllableProperty> advancedControllableProperties = new ArrayList<>(baseControls);
         aggregatedDevice.setControllableProperties(advancedControllableProperties);
 
         try {
@@ -1385,9 +1391,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         }
         validDeviceStatusRetrievalPeriodTimestamps.put(deviceId, currentTimestamp + deviceStatusRetrievalTimeout);
 
-        if (!deviceProperties.containsKey(Constants.PropertyNames.API_CAPABILITIES) || !deviceProperties.containsKey(Constants.PropertyNames.API_PERMISSIONS) ||
-                !deviceProperties.get(Constants.PropertyNames.API_CAPABILITIES).contains("xapi") || !deviceProperties.get(Constants.PropertyNames.API_PERMISSIONS).contains("xapi")
-                || BooleanUtils.isFalse(aggregatedDevice.getDeviceOnline())) {
+        if (!supportsXapiCommands(aggregatedDevice)) {
             assignDeviceInCallStatus(aggregatedDevice, false);
             deviceProperties.keySet().removeIf(name -> name.contains(Constants.PropertyNames.STATUS_GROUP));
             logDebugMessage(String.format("Device %s does not support or has permissions for xapi use. Skipping statistics retrieval.", deviceId));
@@ -1697,6 +1701,75 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             properties.put(Constants.PropertyNames.TAGS, String.join(",", existingTags));
         } else {
             throw new RuntimeException("Error occurred during tag add operation");
+        }
+    }
+
+    /**
+     * Reboot device using xAPI SystemUnit.Boot command
+     *
+     * @param deviceId device to reboot
+     * @throws Exception if any error occurs
+     * */
+    private synchronized void rebootDevice(String deviceId) throws Exception {
+        AggregatedDevice aggregatedDevice = aggregatedDevices.get(deviceId);
+        if (aggregatedDevice == null) {
+            throw new IllegalArgumentException("Unable to locate device " + deviceId);
+        }
+        if (!supportsXapiCommands(aggregatedDevice)) {
+            throw new IllegalStateException("Device does not support xAPI commands");
+        }
+
+        Map<String, String> request = new HashMap<>();
+        request.put("deviceId", deviceId);
+        doPost(Constants.URL.DEVICE_CONTROL + Constants.URL.XAPI_BOOT_COMMAND, request, JsonNode.class);
+    }
+
+    /**
+     * Checks whether aggregated device supports xAPI commands
+     *
+     * @param aggregatedDevice device to check
+     * @return true if device is online and has xAPI capabilities and permissions
+     * */
+    private boolean supportsXapiCommands(AggregatedDevice aggregatedDevice) {
+        Map<String, String> deviceProperties = aggregatedDevice.getProperties();
+        if (deviceProperties == null || BooleanUtils.isFalse(aggregatedDevice.getDeviceOnline())) {
+            return false;
+        }
+        String capabilities = deviceProperties.get(Constants.PropertyNames.API_CAPABILITIES);
+        String permissions = deviceProperties.get(Constants.PropertyNames.API_PERMISSIONS);
+        return StringUtils.isNotNullOrEmpty(capabilities) && capabilities.contains("xapi")
+                && StringUtils.isNotNullOrEmpty(permissions) && permissions.contains("xapi");
+    }
+
+    /**
+     * Controls that are not generated from device configuration API and must be preserved
+     * when configuration properties are refreshed
+     *
+     * @param propertyName property name to check
+     * @return true if property is a base-level control
+     * */
+    private boolean isBaseControl(String propertyName) {
+        return propertyName.startsWith(Constants.PropertyNames.DEVICE_TAGS)
+                || Constants.PropertyNames.REBOOT.equals(propertyName);
+    }
+
+    /**
+     * Adds or removes Reboot control depending on whether the device supports xAPI commands
+     *
+     * @param aggregatedDevice device to update controls for
+     * */
+    private void updateRebootControl(AggregatedDevice aggregatedDevice) {
+        List<AdvancedControllableProperty> controls = aggregatedDevice.getControllableProperties();
+        Map<String, String> properties = aggregatedDevice.getProperties();
+
+        if (!supportsXapiCommands(aggregatedDevice)) {
+            controls.removeIf(control -> Constants.PropertyNames.REBOOT.equals(control.getName()));
+            properties.remove(Constants.PropertyNames.REBOOT);
+            return;
+        }
+
+        if (!properties.containsKey(Constants.PropertyNames.REBOOT)) {
+            properties.put(Constants.PropertyNames.REBOOT, "Reboot");
         }
     }
 
