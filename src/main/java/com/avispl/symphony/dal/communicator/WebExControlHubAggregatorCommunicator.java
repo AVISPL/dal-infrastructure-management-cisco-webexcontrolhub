@@ -873,6 +873,15 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             }
 
         updateValidRetrieveStatisticsTimestamp();
+        if (aggregatedDevices.isEmpty() && !devicePaused) {
+            try {
+                fetchDevicesList();
+            } catch (FailedLoginException e) {
+                throw e;
+            } catch (Exception e) {
+                logger.warn("Unable to fetch devices list during retrieveMultipleStatistics", e);
+            }
+        }
         aggregatedDevices.values().forEach(aggregatedDevice -> aggregatedDevice.setTimestamp(System.currentTimeMillis()));
         return new ArrayList<>(aggregatedDevices.values());
     }
