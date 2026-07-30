@@ -103,6 +103,26 @@ public class WebExControlHubAggregatorCommunicatorTest {
     }
 
     @Test
+    public void testRebootDevice() throws Exception {
+        communicator.init();
+        communicator.setIncludePropertyGroups("SystemUnitStatus");
+        List<AggregatedDevice> devices = communicator.retrieveMultipleStatistics();
+        Assertions.assertNotNull(devices);
+        Assertions.assertFalse(devices.isEmpty());
+
+        AggregatedDevice device = devices.stream()
+                .filter(aggregatedDevice -> aggregatedDevice.getControllableProperties().stream()
+                        .anyMatch(control -> Constants.PropertyNames.REBOOT.equals(control.getName())))
+                .findFirst()
+                .orElse(devices.get(0));
+
+        ControllableProperty controllableProperty = new ControllableProperty();
+        controllableProperty.setProperty(Constants.PropertyNames.REBOOT);
+        controllableProperty.setDeviceId(device.getDeviceId());
+        communicator.controlProperty(controllableProperty);
+    }
+
+    @Test
     public void testGetMultipleStatisticsWithBotAccess() throws Exception {
         communicator.setAuthorizationMode("Bot");
         communicator.setPassword("");
