@@ -1730,7 +1730,15 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
 
         Map<String, String> request = new HashMap<>();
         request.put("deviceId", deviceId);
-        doPost(Constants.URL.DEVICE_CONTROL + Constants.URL.XAPI_BOOT_COMMAND, request, JsonNode.class);
+        try {
+            doPost(Constants.URL.DEVICE_CONTROL + Constants.URL.XAPI_BOOT_COMMAND, request, JsonNode.class);
+        } catch (CommandFailureException e) {
+            logger.error(String.format("WebEx API error %s while rebooting device %s", e.getStatusCode(), deviceId), e);
+            if (e.getStatusCode() == HttpStatus.CONFLICT.value()) {
+                throw new IllegalStateException(String.format("Unable to reboot the device '%s', please check the device state.", aggregatedDevice.getDeviceName()));
+            }
+            throw new IllegalStateException(String.format("Unable to reboot '%s': the reboot command failed.", aggregatedDevice.getDeviceName()));
+        }
     }
 
     /**
