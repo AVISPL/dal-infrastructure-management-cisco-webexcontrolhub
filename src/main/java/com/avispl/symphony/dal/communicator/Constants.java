@@ -73,6 +73,7 @@ public interface Constants {
         String AVAILABLE_PROPERTY_GROUPS = "AvailableDevicesPropertyGroups#";
         String STATUS = "Status";
         String STATUS_GROUP = "Status#";
+        String DEVICE_STATE = "SystemUnit#State";
         String LAST_UPDATED = "LastUpdated";
         String DEVICE_TAGS = "DeviceTags";
         String CONFIGURATION = "Configuration";

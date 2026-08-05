@@ -1427,6 +1427,8 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             String teamsState = elements.at(Constants.CallIndicators.MS_EXTENSION_IN_CALL).asText();
             String teamsNewState = elements.at(Constants.CallIndicators.MS_TEAMS_IN_CALL).asText();
 
+            deviceProperties.put(Constants.PropertyNames.DEVICE_STATE, systemState);
+
             assignDeviceInCallStatus(aggregatedDevice, Objects.equals(Constants.States.IN_CALL, systemState)
                     || Objects.equals(Constants.States.TRUE, teamsState) || Objects.equals(Constants.States.TRUE, teamsNewState));
         } catch (Exception ex) {
