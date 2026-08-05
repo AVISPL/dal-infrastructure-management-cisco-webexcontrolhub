@@ -1768,11 +1768,12 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
      * @param aggregatedDevice device to update controls for
      * */
     private void updateRebootControl(AggregatedDevice aggregatedDevice) {
-        List<AdvancedControllableProperty> controls = aggregatedDevice.getControllableProperties();
+        List<AdvancedControllableProperty> controls = new ArrayList<>(aggregatedDevice.getControllableProperties());
         Map<String, String> properties = aggregatedDevice.getProperties();
 
         if (!supportsXapiCommands(aggregatedDevice)) {
             controls.removeIf(control -> Constants.PropertyNames.REBOOT.equals(control.getName()));
+            aggregatedDevice.setControllableProperties(controls);
             properties.remove(Constants.PropertyNames.REBOOT);
             return;
         }
@@ -1780,6 +1781,14 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         if (!properties.containsKey(Constants.PropertyNames.REBOOT)) {
             properties.put(Constants.PropertyNames.REBOOT, "Reboot");
         }
+        if (controls.stream().noneMatch(control -> Constants.PropertyNames.REBOOT.equals(control.getName()))) {
+            AdvancedControllableProperty.Button button = new AdvancedControllableProperty.Button();
+            button.setLabel("Reboot");
+            button.setLabelPressed("Rebooting");
+            button.setGracePeriod(Constants.PropertyNames.REBOOT_GRACE_PERIOD_SECONDS);
+            controls.add(new AdvancedControllableProperty(Constants.PropertyNames.REBOOT, new Date(), button, "Reboot"));
+        }
+        aggregatedDevice.setControllableProperties(controls);
     }
 
     /**

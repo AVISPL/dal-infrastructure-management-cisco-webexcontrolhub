@@ -3,6 +3,7 @@
  */
 package com.avispl.symphony.dal.communicator;
 
+import com.avispl.symphony.api.dal.dto.control.AdvancedControllableProperty;
 import com.avispl.symphony.api.dal.dto.control.ControllableProperty;
 import com.avispl.symphony.api.dal.dto.monitor.ExtendedStatistics;
 import com.avispl.symphony.api.dal.dto.monitor.Statistics;
@@ -11,6 +12,10 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -120,6 +125,56 @@ public class WebExControlHubAggregatorCommunicatorTest {
         controllableProperty.setProperty(Constants.PropertyNames.REBOOT);
         controllableProperty.setDeviceId(device.getDeviceId());
         communicator.controlProperty(controllableProperty);
+    }
+
+    /**
+     * Regression test for updateRebootControl(): once the Reboot button control is removed because a
+     * device stops supporting xAPI commands, it must be re-added once xAPI support is detected again.
+     * Invoked via reflection since updateRebootControl() is private and this test targets it directly
+     * without going through any network call.
+     *
+     * Initial controllableProperties is seeded with a Reboot Button already present, matching what
+     * aggregatedDeviceProcessor.extractDevices() produces from the mapping before updateRebootControl()
+     * ever runs in production, rather than starting from an empty list.
+     * */
+    @Test
+    public void testUpdateRebootControlReAddsButtonAfterXapiSupportRestored() throws Exception {
+        AggregatedDevice device = new AggregatedDevice();
+        device.setDeviceId("test-device-id");
+        device.setDeviceOnline(true);
+        Map<String, String> properties = new HashMap<>();
+        properties.put(Constants.PropertyNames.API_CAPABILITIES, "[xapi]");
+        properties.put(Constants.PropertyNames.API_PERMISSIONS, "[xapi]");
+        properties.put(Constants.PropertyNames.REBOOT, "Reboot");
+        device.setProperties(properties);
+
+        AdvancedControllableProperty.Button button = new AdvancedControllableProperty.Button();
+        button.setLabel("Reboot");
+        button.setLabelPressed("Rebooting");
+        button.setGracePeriod(Constants.PropertyNames.REBOOT_GRACE_PERIOD_SECONDS);
+        List<AdvancedControllableProperty> controllableProperties = new ArrayList<>();
+        controllableProperties.add(new AdvancedControllableProperty(Constants.PropertyNames.REBOOT, new Date(), button, "Reboot"));
+        device.setControllableProperties(controllableProperties);
+
+        Method updateRebootControl = WebExControlHubAggregatorCommunicator.class.getDeclaredMethod("updateRebootControl", AggregatedDevice.class);
+        updateRebootControl.setAccessible(true);
+
+        // Initial state, as produced by extractDevices() from the mapping: Reboot button present
+        Assertions.assertTrue(device.getControllableProperties().stream()
+                .anyMatch(control -> Constants.PropertyNames.REBOOT.equals(control.getName())));
+
+        // Device goes offline, no longer supports xAPI commands: Reboot button must be removed
+        device.setDeviceOnline(false);
+        updateRebootControl.invoke(communicator, device);
+        Assertions.assertTrue(device.getControllableProperties().stream()
+                .noneMatch(control -> Constants.PropertyNames.REBOOT.equals(control.getName())));
+
+        // Device comes back online, supports xAPI commands again: Reboot button must be re-added
+        device.setDeviceOnline(true);
+        updateRebootControl.invoke(communicator, device);
+        Assertions.assertTrue(device.getControllableProperties().stream()
+                        .anyMatch(control -> Constants.PropertyNames.REBOOT.equals(control.getName())),
+                "Reboot button should be re-added once the device supports xAPI commands again");
     }
 
     @Test

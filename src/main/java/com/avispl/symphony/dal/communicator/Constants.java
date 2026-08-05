@@ -54,6 +54,11 @@ public interface Constants {
         String ADD_TAG = "DeviceTags#AddTag";
         String REMOVE_TAG = "DeviceTags#RemoveAll";
         String REBOOT = "Reboot";
+        /**
+         * Must match the {@code gracePeriod} value declared for the Reboot control in both
+         * src/main/resources/mapping/model-mapping.yml and src/test/resources/mappings/model-mapping.yml.
+         * */
+        long REBOOT_GRACE_PERIOD_SECONDS = 180L;
         String API_CAPABILITIES = "APICapabilities";
         String API_PERMISSIONS = "APIPermissions";
         String TAGS = "DeviceTags#Tags";
