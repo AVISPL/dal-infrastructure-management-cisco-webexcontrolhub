@@ -34,7 +34,7 @@ models:
       control:
         Reboot:
           type: Button
-          gracePeriod: 60
+          gracePeriod: 180
           label: Reboot
           labelPressed: Rebooting
         DeviceTags#RemoveAll:
