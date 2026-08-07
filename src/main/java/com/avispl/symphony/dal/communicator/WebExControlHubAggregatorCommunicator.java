@@ -1427,6 +1427,8 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             String teamsState = elements.at(Constants.CallIndicators.MS_EXTENSION_IN_CALL).asText();
             String teamsNewState = elements.at(Constants.CallIndicators.MS_TEAMS_IN_CALL).asText();
 
+            deviceProperties.put(Constants.PropertyNames.DEVICE_STATE, systemState);
+
             assignDeviceInCallStatus(aggregatedDevice, Objects.equals(Constants.States.IN_CALL, systemState)
                     || Objects.equals(Constants.States.TRUE, teamsState) || Objects.equals(Constants.States.TRUE, teamsNewState));
         } catch (Exception ex) {
@@ -1730,7 +1732,15 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
 
         Map<String, String> request = new HashMap<>();
         request.put("deviceId", deviceId);
-        doPost(Constants.URL.DEVICE_CONTROL + Constants.URL.XAPI_BOOT_COMMAND, request, JsonNode.class);
+        try {
+            doPost(Constants.URL.DEVICE_CONTROL + Constants.URL.XAPI_BOOT_COMMAND, request, JsonNode.class);
+        } catch (CommandFailureException e) {
+            logger.error(String.format("WebEx API error %s while rebooting device %s", e.getStatusCode(), deviceId), e);
+            if (e.getStatusCode() == HttpStatus.CONFLICT.value()) {
+                throw new IllegalStateException(String.format("Unable to reboot the device '%s', please check the device state.", aggregatedDevice.getDeviceName()));
+            }
+            throw new IllegalStateException(String.format("Unable to reboot '%s': the reboot command failed.", aggregatedDevice.getDeviceName()));
+        }
     }
 
     /**
@@ -1768,11 +1778,12 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
      * @param aggregatedDevice device to update controls for
      * */
     private void updateRebootControl(AggregatedDevice aggregatedDevice) {
-        List<AdvancedControllableProperty> controls = aggregatedDevice.getControllableProperties();
+        List<AdvancedControllableProperty> controls = new ArrayList<>(aggregatedDevice.getControllableProperties());
         Map<String, String> properties = aggregatedDevice.getProperties();
 
         if (!supportsXapiCommands(aggregatedDevice)) {
             controls.removeIf(control -> Constants.PropertyNames.REBOOT.equals(control.getName()));
+            aggregatedDevice.setControllableProperties(controls);
             properties.remove(Constants.PropertyNames.REBOOT);
             return;
         }
@@ -1780,6 +1791,14 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         if (!properties.containsKey(Constants.PropertyNames.REBOOT)) {
             properties.put(Constants.PropertyNames.REBOOT, "Reboot");
         }
+        if (controls.stream().noneMatch(control -> Constants.PropertyNames.REBOOT.equals(control.getName()))) {
+            AdvancedControllableProperty.Button button = new AdvancedControllableProperty.Button();
+            button.setLabel("Reboot");
+            button.setLabelPressed("Rebooting");
+            button.setGracePeriod(Constants.PropertyNames.REBOOT_GRACE_PERIOD_SECONDS);
+            controls.add(new AdvancedControllableProperty(Constants.PropertyNames.REBOOT, new Date(), button, "Reboot"));
+        }
+        aggregatedDevice.setControllableProperties(controls);
     }
 
     /**
