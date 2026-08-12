@@ -58,7 +58,7 @@ public interface Constants {
          * Must match the {@code gracePeriod} value declared for the Reboot control in both
          * src/main/resources/mapping/model-mapping.yml and src/test/resources/mappings/model-mapping.yml.
          * */
-        long REBOOT_GRACE_PERIOD_SECONDS = 180L;
+        long REBOOT_GRACE_PERIOD_MS = 180000L;
         String API_CAPABILITIES = "APICapabilities";
         String API_PERMISSIONS = "APIPermissions";
         String TAGS = "DeviceTags#Tags";
