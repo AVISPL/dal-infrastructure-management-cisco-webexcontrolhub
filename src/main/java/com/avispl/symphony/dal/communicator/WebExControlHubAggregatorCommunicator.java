@@ -1795,7 +1795,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             AdvancedControllableProperty.Button button = new AdvancedControllableProperty.Button();
             button.setLabel("Reboot");
             button.setLabelPressed("Rebooting");
-            button.setGracePeriod(Constants.PropertyNames.REBOOT_GRACE_PERIOD_SECONDS);
+            button.setGracePeriod(Constants.PropertyNames.REBOOT_GRACE_PERIOD_MS);
             controls.add(new AdvancedControllableProperty(Constants.PropertyNames.REBOOT, new Date(), button, "Reboot"));
         }
         aggregatedDevice.setControllableProperties(controls);
