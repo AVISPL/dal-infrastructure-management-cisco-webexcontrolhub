@@ -63,7 +63,7 @@ public interface Constants {
         String API_PERMISSIONS = "APIPermissions";
         String TAGS = "DeviceTags#Tags";
         String TOTAL_DEVICES = "MonitoredDevicesTotal";
-        String LAST_CYCLE_DURATION = "LastMonitoringCycleDuration(s)";
+        String LAST_CYCLE_DURATION = "LastMonitoringCycleDuration(sec)";
         String AUTHORIZATION_MODE = "AuthorizationMode";
         String ADAPTER_VERSION = "AdapterVersion";
         String ADAPTER_BUILD_DATE = "AdapterBuildDate";

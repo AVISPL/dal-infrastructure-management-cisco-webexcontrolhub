@@ -149,7 +149,7 @@ public class WebExControlHubAggregatorCommunicatorTest {
         Map<String, String> properties = new HashMap<>();
         properties.put(Constants.PropertyNames.API_CAPABILITIES, "[xapi]");
         properties.put(Constants.PropertyNames.API_PERMISSIONS, "[xapi]");
-        properties.put(Constants.PropertyNames.REBOOT, "Reboot");
+        properties.put(Constants.PropertyNames.REBOOT, "N/A");
         device.setProperties(properties);
 
         AdvancedControllableProperty.Button button = new AdvancedControllableProperty.Button();
