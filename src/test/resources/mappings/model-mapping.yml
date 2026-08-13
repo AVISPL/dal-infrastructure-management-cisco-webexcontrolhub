@@ -30,7 +30,7 @@ models:
         APIPermissions: at("/permissions")?.toString().replaceAll("[^\\.,A-Za-z0-9()\\[\\]]", "")
         DeviceTags#RemoveAll: at("/tags")
         DeviceTags#AddTag: "Enter Tag Name"
-        Reboot: "Reboot"
+        Reboot: "N/A"
       control:
         Reboot:
           type: Button
