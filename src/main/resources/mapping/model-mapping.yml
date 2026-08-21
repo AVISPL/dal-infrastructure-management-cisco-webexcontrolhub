@@ -32,8 +32,14 @@ models:
         DeviceTags#RemoveAll: "Remove All"
         DeviceTags#Tags: at("/tags").toString().replaceAll("[^.,A-Za-z0-9()]", "")
         DeviceTags#AddTag: "Enter Tag Name"
+        Reboot: "Reboot"
         ConnectionStatus: at("/connectionStatus")?.asText()
       control:
+        Reboot:
+          type: Button
+          gracePeriod: 180000
+          label: Reboot
+          labelPressed: Rebooting
         DeviceTags#RemoveAll:
           type: Button
           gracePeriod: 0

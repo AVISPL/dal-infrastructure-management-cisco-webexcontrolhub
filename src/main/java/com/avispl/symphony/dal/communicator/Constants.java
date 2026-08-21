@@ -40,6 +40,7 @@ public interface Constants {
          * }
          * */
         String DEVICE_CONTROL = "xapi/command/"; // if xApi is supported
+        String XAPI_BOOT_COMMAND = "SystemUnit.Boot";
         String XAPI_STATUS = "xapi/status?deviceId=%s&name=*";
         String DEVICE_TAGS = "devices/"; //requires device id
     }
@@ -52,9 +53,17 @@ public interface Constants {
     interface PropertyNames {
         String ADD_TAG = "DeviceTags#AddTag";
         String REMOVE_TAG = "DeviceTags#RemoveAll";
+        String REBOOT = "Reboot";
+        /**
+         * Must match the {@code gracePeriod} value declared for the Reboot control in both
+         * src/main/resources/mapping/model-mapping.yml and src/test/resources/mappings/model-mapping.yml.
+         * */
+        long REBOOT_GRACE_PERIOD_MS = 180000L;
+        String API_CAPABILITIES = "APICapabilities";
+        String API_PERMISSIONS = "APIPermissions";
         String TAGS = "DeviceTags#Tags";
         String TOTAL_DEVICES = "MonitoredDevicesTotal";
-        String LAST_CYCLE_DURATION = "LastMonitoringCycleDuration(s)";
+        String LAST_CYCLE_DURATION = "LastMonitoringCycleDuration(sec)";
         String AUTHORIZATION_MODE = "AuthorizationMode";
         String ADAPTER_VERSION = "AdapterVersion";
         String ADAPTER_BUILD_DATE = "AdapterBuildDate";
@@ -62,10 +71,9 @@ public interface Constants {
         String ADAPTER_UPTIME_MIN = "AdapterUptime(min)";
         String MONITORING_CYCLE_INTERVAL = "MonitoringCycleInterval(min)";
         String AVAILABLE_PROPERTY_GROUPS = "AvailableDevicesPropertyGroups#";
-        String API_CAPABILITIES = "APICapabilities";
-        String API_PERMISSIONS = "APIPermissions";
         String STATUS = "Status";
         String STATUS_GROUP = "Status#";
+        String DEVICE_STATE = "SystemUnit#State";
         String LAST_UPDATED = "LastUpdated";
         String DEVICE_TAGS = "DeviceTags";
         String CONFIGURATION = "Configuration";
