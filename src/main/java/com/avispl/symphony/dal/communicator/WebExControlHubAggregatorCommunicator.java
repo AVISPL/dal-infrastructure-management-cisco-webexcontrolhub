@@ -89,10 +89,11 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         public ClientHttpResponse intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution) throws IOException {
             ClientHttpResponse response = execution.execute(request, body);
             if (response.getStatusCode().value() == 429) {
-                List<String> retryAfterSeconds = response.getHeaders().get("Retry-After");
-                if (!retryAfterSeconds.isEmpty()) {
+                // getFirst() instead of get(): HttpHeaders.get has different signatures in Spring 6 and 7
+                String retryAfterSeconds = response.getHeaders().getFirst("Retry-After");
+                if (retryAfterSeconds != null) {
                     response.close();
-                    throw new RetryError(Long.parseLong(retryAfterSeconds.get(0)));
+                    throw new RetryError(Long.parseLong(retryAfterSeconds));
                 }
             }
             return response;
@@ -967,8 +968,8 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             headers.add(Constants.Headers.AUTHORIZATION, "Bearer " + accessToken);
         }
         if (httpMethod == HttpMethod.PATCH) {
-            headers.remove(Constants.Headers.CONTENT_TYPE);
-            headers.add(Constants.Headers.CONTENT_TYPE, "application/json-patch+json");
+            // set() replaces every existing value; HttpHeaders.remove has different signatures in Spring 6 and 7
+            headers.set(Constants.Headers.CONTENT_TYPE, "application/json-patch+json");
         }
         return super.putExtraRequestHeaders(httpMethod, uri, headers);
     }
