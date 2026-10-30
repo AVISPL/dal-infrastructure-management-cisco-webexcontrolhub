@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.avispl.symphony.dal.communicator.webexcontrolhub</groupId>
   <artifactId>symphony-dal-infrastructure-management-webexcontrolhub</artifactId>
-  <version>1.0.3</version>
+  <version>1.0.4</version>
   <properties>
     <symphonyApiVersion>RELEASE</symphonyApiVersion>
     <timestamp>${maven.build.timestamp}</timestamp>
@@ -150,7 +150,7 @@
     <dependency>
       <groupId>org.springframework</groupId>
       <artifactId>spring-expression</artifactId>
-      <version>6.2.14</version>
+      <version>6.2.19</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
