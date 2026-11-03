@@ -143,12 +143,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                         logDebugMessage("Fetching devices list.");
                         fetchDevicesList();
                     } catch (Exception e) {
-                        logger.error("Error occurred during device list retrieval: " + e.getMessage() + " with cause: " + e.getCause().getMessage(), e);
-                        if (e instanceof CommandFailureException) {
-                            saveActiveErrors(((CommandFailureException) e).getStatusCode(), e.getMessage());
-                        } else if (e instanceof FailedLoginException) {
-                            saveActiveErrors(401, e.getMessage());
-                        }
+                        logger.error("Error occurred during device list retrieval: " + ExceptionUtils.getRootCauseMessage(e), e);
                     }
 
                     if (!inProgress) {
@@ -183,17 +178,8 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                             devicesExecutionPool.add(executorService.submit(() -> {
                                 try {
                                     requestDeviceStatus(aggregatedDevice);
-                                    cleanupActiveErrors();
                                 } catch (Exception e) {
                                     logger.error(String.format("Exception during WebEx device '%s' status data processing.", aggregatedDevice.getDeviceName()), e);
-                                    if (e instanceof CommandFailureException) {
-                                        int statusCode = ((CommandFailureException) e).getStatusCode();
-                                        if (statusCode != 404 && statusCode != 403) {
-                                            saveActiveErrors(statusCode, e.getMessage());
-                                        }
-                                    } else if (e instanceof FailedLoginException) {
-                                        saveActiveErrors(401, e.getMessage());
-                                    }
                                 }
                             }));
                         }
@@ -201,17 +187,8 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                             devicesExecutionPool.add(executorService.submit(() -> {
                                 try {
                                     requestDeviceConfiguration(aggregatedDevice);
-                                    cleanupActiveErrors();
                                 } catch (Exception e) {
                                     logger.error(String.format("Exception during WebEx device '%s' configuration data processing.", aggregatedDevice.getDeviceName()), e);
-                                    if (e instanceof CommandFailureException) {
-                                        int statusCode = ((CommandFailureException) e).getStatusCode();
-                                        if (statusCode != 404 && statusCode != 403) {
-                                            saveActiveErrors(statusCode, e.getMessage());
-                                        }
-                                    } else if (e instanceof FailedLoginException) {
-                                        saveActiveErrors(401, e.getMessage());
-                                    }
                                 }
                             }));
                         }
@@ -393,11 +370,16 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
      * */
     private Long lastMonitoringCycleDuration = 1L;
 
-    private int lastErrorCode = 0;
-    private String lastErrorMessage;
+    /**
+     * Message of the credential rejection reported by the WebEx API: HTTP 401 that persists after a token refresh,
+     * a rejected token refresh, or HTTP 403 on the devices list. Null while the credentials are accepted.
+     * {@link #retrieveMultipleStatistics()} throws {@link FailedLoginException} while it is set; any successful
+     * API response clears it.
+     * */
+    private volatile String authenticationFailure;
 
     private String refreshToken; // The refresh token is ever lasting
-    private String accessToken;
+    private volatile String accessToken;
     private long adapterInitializationTimestamp;
 
     private AggregatedDeviceProcessor aggregatedDeviceProcessor;
@@ -828,7 +810,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             configurationMap.put("value", String.valueOf(value));
         }
 
-        JsonNode response = doPatch(Constants.URL.DEVICE_CONFIGURATIONS + deviceId, Collections.singletonList(configurationMap), JsonNode.class);
+        JsonNode response = doPatchWithTokenRefresh(Constants.URL.DEVICE_CONFIGURATIONS + deviceId, Collections.singletonList(configurationMap));
         response.asText();
     }
 
@@ -869,10 +851,6 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
 
     @Override
     public List<AggregatedDevice> retrieveMultipleStatistics() throws FailedLoginException {
-        if (lastErrorCode != 0 && (lastErrorCode == 401 || lastErrorCode == 403)) {
-                throw new FailedLoginException("Failed login while retrieving devices list: " + lastErrorMessage);
-            }
-
         updateValidRetrieveStatisticsTimestamp();
         if (aggregatedDevices.isEmpty() && !devicePaused) {
             try {
@@ -882,6 +860,10 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             } catch (Exception e) {
                 logger.warn("Unable to fetch devices list during retrieveMultipleStatistics", e);
             }
+        }
+        String failure = authenticationFailure;
+        if (failure != null) {
+            throw new FailedLoginException(failure);
         }
         aggregatedDevices.values().forEach(aggregatedDevice -> aggregatedDevice.setTimestamp(System.currentTimeMillis()));
         return new ArrayList<>(aggregatedDevices.values());
@@ -923,7 +905,6 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             updateRebootControl(aggregatedDevices.get(deviceId));
         }
         logDebugMessage("Fetched devices list: " + aggregatedDevices);
-        cleanupActiveErrors();
     }
 
     @Override
@@ -1040,15 +1021,16 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         int retries = 0;
         while (retries++ < requestRetryAttempts) {
             try {
-                response = doGetWithRetry(url);
+                response = doGetWithRetry(url, true);
                 break;
+            } catch (FailedLoginException e) {
+                throw e;
             } catch (Exception e) {
                 Throwable rootCause = ExceptionUtils.getRootCause(e);
                 if (ExceptionUtils.hasCause(rootCause, RetryError.class)) {
                     Long retryAfter = ((RetryError)rootCause).getRetryAfter();
                     if (retryAfter != null) {
                         TimeUnit.SECONDS.sleep(retryAfter);
-                        response = doGetWithRetry(url);
                         continue;
                     }
                 }
@@ -1057,10 +1039,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         }
 
         if (response == null) {
-            if (logger.isDebugEnabled()) {
-                logger.debug("Unable to retrieve device configuration details.");
-            }
-            return;
+            throw new IllegalStateException("Unable to retrieve the WebEx devices list: " + url);
         }
         List<AggregatedDevice> extractedDevices = aggregatedDeviceProcessor.extractDevices(response);
         aggregatedDevices.addAll(extractedDevices);
@@ -1081,15 +1060,34 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
      * */
     private void generateAccessToken() throws Exception {
         if (authorizationMode == AuthorizationMode.INTEGRATION) {
+            if (StringUtils.isNullOrEmpty(getLogin()) || StringUtils.isNullOrEmpty(getPassword()) || StringUtils.isNullOrEmpty(refreshToken)) {
+                throw new FailedLoginException("Integration mode requires Login (client ID), Password (client secret) and refreshToken");
+            }
             Map<String, String> request = new HashMap<>();
             request.put("grant_type", "refresh_token");
             request.put("client_id", getLogin());
             request.put("client_secret", getPassword());
             request.put("refresh_token", refreshToken);
 
-            AuthorizationResponse response = doPost(Constants.URL.ACCESS_TOKEN_URL, request, AuthorizationResponse.class);
+            AuthorizationResponse response;
+            try {
+                response = doPost(Constants.URL.ACCESS_TOKEN_URL, request, AuthorizationResponse.class);
+            } catch (CommandFailureException e) {
+                int statusCode = e.getStatusCode();
+                if (statusCode == HttpStatus.BAD_REQUEST.value() || statusCode == HttpStatus.UNAUTHORIZED.value()
+                        || statusCode == HttpStatus.FORBIDDEN.value()) {
+                    throw new FailedLoginException(String.format("WebEx rejected the access token refresh with HTTP %d: %s", statusCode, e.getMessage()));
+                }
+                throw e;
+            }
+            if (response == null || StringUtils.isNullOrEmpty(response.getAccessToken())) {
+                throw new FailedLoginException("WebEx access token refresh returned no access token");
+            }
             accessToken = response.getAccessToken();
         } else if (authorizationMode == AuthorizationMode.BOT) {
+            if (StringUtils.isNullOrEmpty(getPassword())) {
+                throw new FailedLoginException("Bot mode requires the bot access token as Password");
+            }
             accessToken = getPassword();
         }
     }
@@ -1248,7 +1246,6 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                 isBaseControl(advancedControllableProperty.getName())).collect(toList());
 
         List<AdvancedControllableProperty> advancedControllableProperties = new ArrayList<>(baseControls);
-        aggregatedDevice.setControllableProperties(advancedControllableProperties);
 
         try {
             JsonNode response = doGetWithRetry(Constants.URL.DEVICE_CONFIGURATIONS + deviceId);
@@ -1258,6 +1255,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                 }
                 return;
             }
+            aggregatedDevice.setControllableProperties(advancedControllableProperties);
             if (deviceProperties != null && !deviceProperties.isEmpty()) {
                 deviceProperties.keySet().removeIf(s -> s.contains(Constants.PropertyNames.CONFIGURATION_GROUP));
             }
@@ -1703,7 +1701,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         request.put("path", "tags");
         request.put("value", Collections.singletonList(tag));
 
-        JsonNode response = doPatch(Constants.URL.DEVICE_TAGS + deviceId, Collections.singletonList(request), JsonNode.class);
+        JsonNode response = doPatchWithTokenRefresh(Constants.URL.DEVICE_TAGS + deviceId, Collections.singletonList(request));
         boolean success = String.valueOf(response.at(Constants.Paths.TAGS)).contains(tag);
         if (success) {
             Map<String, String> properties = aggregatedDevices.get(deviceId).getProperties();
@@ -1813,7 +1811,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         request.put("op", "remove");
         request.put("path", "tags");
         request.put("value", "[]");
-        JsonNode response = doPatch(Constants.URL.DEVICE_TAGS + deviceId, Collections.singletonList(request), JsonNode.class);
+        JsonNode response = doPatchWithTokenRefresh(Constants.URL.DEVICE_TAGS + deviceId, Collections.singletonList(request));
         boolean success = response.at(Constants.Paths.TAGS).isEmpty();
         if (success) {
             Map<String, String> properties = aggregatedDevices.get(deviceId).getProperties();
@@ -1824,79 +1822,142 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     }
 
     /**
-     * If addressed too frequently, WebEx API may respond with 429 code, meaning that the call rate per second was reached.
-     * Normally it would rarely happen due to the request rate limit, but when it does happen - adapter must retry the
-     * attempts of retrieving needed information.
-     * Wait timeout is set based on the Retry-After header value.
+     * Drops the access token that the WebEx API rejected, so the next request obtains a new one through
+     * {@link #authenticate()}. A token already replaced by another thread is kept.
+     *
+     * @param rejectedToken the access token sent with the rejected request
+     * @return true in Integration mode, where a new token can be requested; false in Bot mode
+     * */
+    private synchronized boolean invalidateAccessToken(String rejectedToken) {
+        if (authorizationMode != AuthorizationMode.INTEGRATION) {
+            return false;
+        }
+        if (Objects.equals(accessToken, rejectedToken)) {
+            accessToken = null;
+        }
+        return true;
+    }
+
+    /**
+     * Records a credential rejection, reported by {@link #retrieveMultipleStatistics()} until an API request succeeds.
+     *
+     * @param message description of the rejection
+     * */
+    private void saveAuthenticationFailure(String message) {
+        authenticationFailure = message;
+        logger.error("WebEx API rejected the credentials: " + message);
+    }
+
+    /**
+     * Clears the recorded credential rejection after a successful API response.
+     * */
+    private void clearAuthenticationFailure() {
+        authenticationFailure = null;
+    }
+
+    /**
+     * Sends a JSON Patch request. On HTTP 401 in Integration mode the access token is refreshed and the request is
+     * sent once more; a second rejection is recorded and rethrown.
+     *
+     * @param url endpoint to patch
+     * @param body JSON Patch operations
+     * @return response body
+     * @throws Exception if the request fails
+     * */
+    private JsonNode doPatchWithTokenRefresh(String url, Object body) throws Exception {
+        String token = accessToken;
+        try {
+            JsonNode response = doPatch(url, body, JsonNode.class);
+            clearAuthenticationFailure();
+            return response;
+        } catch (FailedLoginException e) {
+            if (!invalidateAccessToken(token)) {
+                saveAuthenticationFailure(e.getMessage());
+                throw e;
+            }
+        }
+        try {
+            JsonNode response = doPatch(url, body, JsonNode.class);
+            clearAuthenticationFailure();
+            return response;
+        } catch (FailedLoginException e) {
+            saveAuthenticationFailure(e.getMessage());
+            throw e;
+        }
+    }
+
+    /**
+     * Retrieves data from the WebEx API, see {@link #doGetWithRetry(String, boolean)}. HTTP 403 is treated as a
+     * resource the credentials cannot access.
      *
      * @param url to retrieve data from
-     * @return JsonNode response body
-     * @throws Exception if a communication error occurs
+     * @return JsonNode response body, or null if the request failed
+     * @throws Exception if the credentials are rejected or the API asks to retry later
      */
-    private synchronized JsonNode doGetWithRetry(String url) throws Exception {
+    private JsonNode doGetWithRetry(String url) throws Exception {
+        return doGetWithRetry(url, false);
+    }
+
+    /**
+     * Retrieves data from the WebEx API.
+     * <ul>
+     *     <li>HTTP 401: in Integration mode the access token is refreshed and the request is repeated once. A
+     *     rejection that persists, or a rejected token refresh, is recorded for {@link #retrieveMultipleStatistics()}
+     *     and thrown as {@link FailedLoginException}.</li>
+     *     <li>HTTP 403: recorded and thrown as {@link FailedLoginException} when {@code forbiddenIsLoginFailure} is
+     *     set, otherwise logged and answered with null.</li>
+     *     <li>HTTP 429: the request is repeated, up to 10 attempts in total; a {@link RetryError} raised by
+     *     {@link WebExRequestInterceptor} is rethrown so the caller can wait for the Retry-After period.</li>
+     *     <li>Any other error is logged and answered with null.</li>
+     * </ul>
+     * A successful response clears the recorded credential rejection.
+     *
+     * @param url to retrieve data from
+     * @param forbiddenIsLoginFailure true to report HTTP 403 as a credential rejection
+     * @return JsonNode response body, or null if the request failed
+     * @throws Exception if the credentials are rejected or the API asks to retry later
+     */
+    private synchronized JsonNode doGetWithRetry(String url, boolean forbiddenIsLoginFailure) throws Exception {
         int retryAttempts = 0;
-        Exception lastError = null;
-        boolean criticalError = false;
+        boolean tokenRefreshed = false;
         while (retryAttempts++ < 10 && !devicePaused) {
+            String token = accessToken;
             try {
-                return doGet(url, JsonNode.class);
-            } catch (CommandFailureException e) {
-                lastError = e;
-                if (e.getStatusCode() != 429) {
-                    // Might be 401, 403 or any other error code here so the code will just get stuck
-                    // cycling this failed request until it's fixed. So we need to skip this scenario.
-                    criticalError = true;
-                    logger.error(String.format("WebEx API error %s while retrieving %s data", e.getStatusCode(), url), e);
-                    break;
+                JsonNode response = doGet(url, JsonNode.class);
+                clearAuthenticationFailure();
+                return response;
+            } catch (FailedLoginException e) {
+                if (!tokenRefreshed && invalidateAccessToken(token)) {
+                    tokenRefreshed = true;
+                    logDebugMessage(String.format("WebEx API answered HTTP 401 for %s, refreshing the access token", url));
+                    continue;
                 }
+                saveAuthenticationFailure(e.getMessage());
+                throw e;
+            } catch (CommandFailureException e) {
+                int statusCode = e.getStatusCode();
+                if (statusCode == HttpStatus.TOO_MANY_REQUESTS.value()) {
+                    continue;
+                }
+                if (statusCode == HttpStatus.FORBIDDEN.value() && forbiddenIsLoginFailure) {
+                    String message = String.format("WebEx API answered HTTP 403 for %s: %s", url, e.getMessage());
+                    saveAuthenticationFailure(message);
+                    throw new FailedLoginException(message);
+                }
+                logger.error(String.format("WebEx API error %s while retrieving %s data", statusCode, url), e);
+                return null;
             } catch (Exception e) {
                 Throwable rootCause = ExceptionUtils.getRootCause(e);
                 if (ExceptionUtils.hasCause(rootCause, RetryError.class)) {
                     throw e;
                 }
-                lastError = e;
-                // if service is running, log error
                 if (!devicePaused) {
-                    criticalError = true;
                     logger.error(String.format("WebEx API error while retrieving %s data", url), e);
                 }
-                break;
-            }
-        }
-
-        if (retryAttempts == 10 && !devicePaused || criticalError) {
-            // if we got here, all 10 attempts failed, or this is a login error that doesn't imply retry attempts
-            if (lastError instanceof CommandFailureException) {
-                int code = ((CommandFailureException)lastError).getStatusCode();
-                if (code == HttpStatus.UNAUTHORIZED.value() || code == HttpStatus.FORBIDDEN.value()) {
-                    saveActiveErrors(code, lastError.getMessage());
-                    return null;
-                }
-                saveActiveErrors(code, lastError.getMessage());
-            } else if (lastError instanceof FailedLoginException) {
-                saveActiveErrors(401, lastError.getMessage());
                 return null;
-            } else {
-                saveActiveErrors(0, "Unknown Error");
             }
         }
         return null;
-    }
-
-    /**
-     * Cleanup any active error, that was previously saved
-     * */
-    private void cleanupActiveErrors() {
-        lastErrorCode = 0;
-        lastErrorMessage = null;
-    }
-
-    /**
-     * Save an error that must be propagated to the UI
-     * */
-    private void saveActiveErrors(int errorCode, String message) {
-        lastErrorCode = errorCode;
-        lastErrorMessage = message;
     }
 
     /**
