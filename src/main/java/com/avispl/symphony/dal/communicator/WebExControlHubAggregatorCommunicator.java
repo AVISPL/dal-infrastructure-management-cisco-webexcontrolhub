@@ -142,7 +142,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                         logDebugMessage("Fetching devices list.");
                         fetchDevicesList();
                     } catch (Exception e) {
-                        logger.error("Error occurred during device list retrieval: " + e.getMessage() + " with cause: " + e.getCause().getMessage(), e);
+                        logger.error("Error occurred during device list retrieval: " + e.getMessage(), e);
                         if (e instanceof CommandFailureException) {
                             saveActiveErrors(((CommandFailureException) e).getStatusCode(), e.getMessage());
                         } else if (e instanceof FailedLoginException) {
@@ -305,9 +305,19 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     private boolean includeConfigurationUpdates = true;
 
     /**
-     *
+     * Number of devices requested per devices list page (WebEx API max parameter)
      * */
     private int deviceRetrievalPageSize = 100;
+
+    /**
+     * Upper limit of the WebEx API max parameter for the devices list
+     * */
+    private static final int MAX_DEVICE_RETRIEVAL_PAGE_SIZE = 1000;
+
+    /**
+     * Whether the last devices list retrieval collected every page
+     * */
+    private volatile boolean deviceListComplete = true;
 
     /**
      * Total retry attempts for data retrieval
@@ -392,11 +402,11 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
      * */
     private Long lastMonitoringCycleDuration = 1L;
 
-    private int lastErrorCode = 0;
-    private String lastErrorMessage;
+    private volatile int lastErrorCode = 0;
+    private volatile String lastErrorMessage;
 
     private String refreshToken; // The refresh token is ever lasting
-    private String accessToken;
+    private volatile String accessToken;
     private long adapterInitializationTimestamp;
 
     private AggregatedDeviceProcessor aggregatedDeviceProcessor;
@@ -456,9 +466,6 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         aggregatedDeviceProcessor = new AggregatedDeviceProcessor(mapping);
         adapterProperties = new Properties();
         adapterProperties.load(getClass().getResourceAsStream("/version.properties"));
-
-        executorService = Executors.newFixedThreadPool(executorServiceThreadCount);
-        executorService.submit(deviceDataLoader = new WebExControlHubDeviceDataLoader());
     }
 
     /**
@@ -741,9 +748,20 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         adapterInitializationTimestamp = currentTimestamp;
         validRetrieveStatisticsTimestamp = System.currentTimeMillis();
         validDeviceMetaDataRetrievalPeriodTimestamp = currentTimestamp;
+        nextDevicesCollectionIterationTimestamp = 0L;
+        deviceListComplete = true;
 
         setBaseUri("v1");
         super.internalInit();
+
+        // Started here rather than in the constructor: internalDestroy() shuts the executor down,
+        // so a destroy followed by init must start collection again
+        if (executorService == null) {
+            executorService = Executors.newFixedThreadPool(executorServiceThreadCount);
+        }
+        if (deviceDataLoader == null) {
+            executorService.submit(deviceDataLoader = new WebExControlHubDeviceDataLoader());
+        }
     }
 
     @Override
@@ -761,6 +779,8 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             devicesExecutionPool.forEach(future -> future.cancel(true));
             devicesExecutionPool.clear();
             aggregatedDevices.clear();
+            validDeviceConfigurationRetrievalPeriodTimestamps.clear();
+            validDeviceStatusRetrievalPeriodTimestamps.clear();
 
             availablePropertyGroups.clear();
             controllablePropertiesToConfigurationNames.clear();
@@ -872,16 +892,9 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                 throw new FailedLoginException("Failed login while retrieving devices list: " + lastErrorMessage);
             }
 
+        // Only reads the cache: the devices list is collected by deviceDataLoader, which this call keeps active.
+        // Fetching the list here would block Symphony until every page is retrieved (minutes for large fleets).
         updateValidRetrieveStatisticsTimestamp();
-        if (aggregatedDevices.isEmpty() && !devicePaused) {
-            try {
-                fetchDevicesList();
-            } catch (FailedLoginException e) {
-                throw e;
-            } catch (Exception e) {
-                logger.warn("Unable to fetch devices list during retrieveMultipleStatistics", e);
-            }
-        }
         aggregatedDevices.values().forEach(aggregatedDevice -> aggregatedDevice.setTimestamp(System.currentTimeMillis()));
         return new ArrayList<>(aggregatedDevices.values());
     }
@@ -902,9 +915,12 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         validDeviceMetaDataRetrievalPeriodTimestamp = currentTimestamp + deviceMetaDataRetrievalTimeout;
         List<AggregatedDevice> aggregatedDevicesList = listWebExDevices();
 
-        //If device is not in the list, provided by the server anymore - remove it from the cache
-        List<String> collectedDeviceIds = aggregatedDevicesList.stream().map(AggregatedDevice::getDeviceId).collect(toList());
-        aggregatedDevices.keySet().removeIf(deviceId -> !collectedDeviceIds.contains(deviceId));
+        //If device is not in the list, provided by the server anymore - remove it from the cache.
+        //Skipped when the listing stopped early, otherwise devices on the missing pages would be dropped.
+        if (deviceListComplete) {
+            Set<String> collectedDeviceIds = aggregatedDevicesList.stream().map(AggregatedDevice::getDeviceId).collect(Collectors.toSet());
+            aggregatedDevices.keySet().removeIf(deviceId -> !collectedDeviceIds.contains(deviceId));
+        }
 
         for(AggregatedDevice aggregatedDevice: aggregatedDevicesList) {
             String deviceId = aggregatedDevice.getDeviceId();
@@ -937,8 +953,22 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     }
 
     @Override
-    protected void authenticate() throws Exception {
+    protected synchronized void authenticate() throws Exception {
         generateAccessToken();
+    }
+
+    /**
+     * Return the current access token, generating one first if there is none.
+     * Synchronized so that parallel requests generate the token once.
+     *
+     * @return access token
+     * @throws Exception if token generation fails
+     * */
+    private synchronized String obtainAccessToken() throws Exception {
+        if (StringUtils.isNullOrEmpty(accessToken)) {
+            generateAccessToken();
+        }
+        return accessToken;
     }
 
     /**
@@ -961,10 +991,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     @Override
     protected HttpHeaders putExtraRequestHeaders(HttpMethod httpMethod, String uri, HttpHeaders headers) throws Exception {
         if (!uri.contains("access_token")) {
-            if (StringUtils.isNullOrEmpty(accessToken)) {
-                authenticate();
-            }
-            headers.add(Constants.Headers.AUTHORIZATION, "Bearer " + accessToken);
+            headers.add(Constants.Headers.AUTHORIZATION, "Bearer " + obtainAccessToken());
         }
         if (httpMethod == HttpMethod.PATCH) {
             headers.remove(Constants.Headers.CONTENT_TYPE);
@@ -1016,7 +1043,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         deviceListUrl.append("start=%d&max=%d");
 
         List<AggregatedDevice> extractedDevices = new ArrayList<>();
-        listWebExDevices(extractedDevices, deviceListUrl.toString(), 0);
+        deviceListComplete = listWebExDevices(extractedDevices, deviceListUrl.toString());
 
         extractedDevices.forEach(aggregatedDevice -> {
             configureAggregatedDeviceCatalogData(aggregatedDevice);
@@ -1027,14 +1054,42 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     }
 
     /**
-     * List WebEx devices, with pagination (start/max query string parameters). The method is called recursively
+     * List WebEx devices page by page, using the start (offset) and max (page size) query string parameters.
      *
      * @param aggregatedDevices list to add aggregated devices to
-     * @param baseUrl url to use for devices collection (with filters applied)
-     * @param start starting index for current request
+     * @param baseUrl url to use for devices collection (with filters applied), with start/max placeholders
+     * @return true if every page was retrieved, false if the listing stopped early because a page failed
      * */
-    private void listWebExDevices(List<AggregatedDevice> aggregatedDevices, String baseUrl, int start) throws Exception {
-        String url = String.format(baseUrl, start, start + deviceRetrievalPageSize);
+    private boolean listWebExDevices(List<AggregatedDevice> aggregatedDevices, String baseUrl) throws Exception {
+        int pageSize = Math.max(1, Math.min(deviceRetrievalPageSize, MAX_DEVICE_RETRIEVAL_PAGE_SIZE));
+        int start = 0;
+        while (true) {
+            String url = String.format(baseUrl, start, pageSize);
+            JsonNode response = requestDevicesPage(url);
+            if (response == null) {
+                logger.warn(String.format("Unable to retrieve WebEx devices page %s, the devices list is incomplete: %d devices collected",
+                        url, aggregatedDevices.size()));
+                return false;
+            }
+            List<AggregatedDevice> extractedDevices = aggregatedDeviceProcessor.extractDevices(response);
+            aggregatedDevices.addAll(extractedDevices);
+
+            if (extractedDevices.size() < pageSize) {
+                logDebugMessage("Last page of the output is reached, finishing collecting devices list");
+                return true;
+            }
+            start += pageSize;
+        }
+    }
+
+    /**
+     * Request one page of the devices list, waiting and retrying when the API answers 429 with Retry-After
+     *
+     * @param url devices page url
+     * @return response body, or null if the page could not be retrieved
+     * @throws Exception if interrupted while waiting for a retry
+     * */
+    private JsonNode requestDevicesPage(String url) throws Exception {
         JsonNode response = null;
         int retries = 0;
         while (retries++ < requestRetryAttempts) {
@@ -1044,33 +1099,17 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             } catch (Exception e) {
                 Throwable rootCause = ExceptionUtils.getRootCause(e);
                 if (ExceptionUtils.hasCause(rootCause, RetryError.class)) {
-                    Long retryAfter = ((RetryError)rootCause).getRetryAfter();
+                    Long retryAfter = ((RetryError) rootCause).getRetryAfter();
                     if (retryAfter != null) {
                         TimeUnit.SECONDS.sleep(retryAfter);
-                        response = doGetWithRetry(url);
                         continue;
                     }
                 }
+                logger.warn(String.format("Unable to retrieve WebEx devices page %s", url), e);
                 break;
             }
         }
-
-        if (response == null) {
-            if (logger.isDebugEnabled()) {
-                logger.debug("Unable to retrieve device configuration details.");
-            }
-            return;
-        }
-        List<AggregatedDevice> extractedDevices = aggregatedDeviceProcessor.extractDevices(response);
-        aggregatedDevices.addAll(extractedDevices);
-
-        if (extractedDevices.size() < deviceRetrievalPageSize) {
-            if (logger.isDebugEnabled()) {
-                logger.debug("Last page of the output is reached, finishing collecting devices list");
-            }
-        } else {
-            listWebExDevices(aggregatedDevices, baseUrl, start + deviceRetrievalPageSize + 1);
-        }
+        return response;
     }
 
     /**
@@ -1832,7 +1871,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
      * @return JsonNode response body
      * @throws Exception if a communication error occurs
      */
-    private synchronized JsonNode doGetWithRetry(String url) throws Exception {
+    private JsonNode doGetWithRetry(String url) throws Exception {
         int retryAttempts = 0;
         Exception lastError = null;
         boolean criticalError = false;
