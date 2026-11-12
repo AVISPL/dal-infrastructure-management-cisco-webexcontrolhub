@@ -337,10 +337,11 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
 
     /**
      * WebEx API requests per minute the adapter allows itself, shared by all collection threads.
-     * WebEx documents ~300 requests per minute per user for most REST APIs; the default leaves headroom.
-     * 0 or less disables pacing.
+     * WebEx documents ~300 requests per minute per user for most REST APIs; the default leaves headroom,
+     * so that 429s arriving below the nominal limit (enforced per server) stay rare: a request already in
+     * flight when a 429 arrives lands inside its Retry-After window. 0 or less disables pacing.
      * */
-    private int requestsPerMinute = 250;
+    private int requestsPerMinute = 235;
 
     /**
      * Paces all GET requests to {@link #requestsPerMinute} and pauses them all on 429 responses
