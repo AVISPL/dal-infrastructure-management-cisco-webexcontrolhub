@@ -89,11 +89,17 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         public ClientHttpResponse intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution) throws IOException {
             ClientHttpResponse response = execution.execute(request, body);
             if (response.getStatusCode().value() == 429) {
-                // getFirst() instead of get(): HttpHeaders.get has different signatures in Spring 6 and 7
+                // getFirst() instead of get(): HttpHeaders.get has different signatures in Spring 6 and 7.
+                // Without a usable Retry-After header the response goes on as a regular 429 error
                 String retryAfterSeconds = response.getHeaders().getFirst("Retry-After");
                 if (retryAfterSeconds != null) {
-                    response.close();
-                    throw new RetryError(Long.parseLong(retryAfterSeconds));
+                    try {
+                        long retryAfter = Long.parseLong(retryAfterSeconds.trim());
+                        response.close();
+                        throw new RetryError(retryAfter);
+                    } catch (NumberFormatException e) {
+                        logger.warn("Unable to parse Retry-After header value: " + retryAfterSeconds);
+                    }
                 }
             }
             return response;
@@ -204,7 +210,17 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                             }
                         }
                         devicesExecutionPool.removeIf(Future::isDone);
-                    } while (!devicesExecutionPool.isEmpty());
+                        // With a large fleet a details cycle is paced by the request budget and can take an hour or more;
+                        // keep the devices list (online state, errors, software) fresh in the meantime.
+                        // fetchDevicesList is a no-op while in its deviceMetaDataRetrievalTimeout cooldown.
+                        if (inProgress && !devicesExecutionPool.isEmpty()) {
+                            try {
+                                fetchDevicesList();
+                            } catch (Exception e) {
+                                logger.error("Error occurred during device list retrieval: " + ExceptionUtils.getRootCauseMessage(e), e);
+                            }
+                        }
+                    } while (inProgress && !devicesExecutionPool.isEmpty());
 
                     // We don't want to fetch devices statuses too often, so by default it's currentTime + 60s
                     // otherwise - the variable is reset by the retrieveMultipleStatistics() call, which
@@ -283,9 +299,42 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     private boolean includeConfigurationUpdates = true;
 
     /**
-     *
+     * Number of devices requested per devices list page (WebEx API max parameter)
      * */
-    private int deviceRetrievalPageSize = 100;
+    private int deviceRetrievalPageSize = 1000;
+
+    /**
+     * Upper limit of the WebEx API max parameter for the devices list
+     * */
+    private static final int MAX_DEVICE_RETRIEVAL_PAGE_SIZE = 1000;
+
+    /**
+     * Whether the last devices list retrieval collected every page
+     * */
+    private volatile boolean deviceListComplete = true;
+
+    /**
+     * WebEx API requests per minute the adapter allows itself, shared by all collection threads.
+     * WebEx documents ~300 requests per minute per user for most REST APIs; the default leaves headroom,
+     * so that 429s arriving below the nominal limit (enforced per server) stay rare: a request already in
+     * flight when a 429 arrives lands inside its Retry-After window. 0 or less disables pacing.
+     * */
+    private int requestsPerMinute = 235;
+
+    /**
+     * Paces all GET requests to {@link #requestsPerMinute} and pauses them all on 429 responses
+     * */
+    private final RequestRateLimiter requestRateLimiter = new RequestRateLimiter(requestsPerMinute);
+
+    /**
+     * Pause applied when a 429 response comes without a Retry-After header
+     * */
+    private static final long DEFAULT_RETRY_AFTER_SECONDS = 5;
+
+    /**
+     * Devices that report no configurations (e.g. phones) are asked again only after this period
+     * */
+    private static final long NO_CONFIGURATION_RETRY_PERIOD = 24 * 60 * 60 * 1000L;
 
     /**
      * Total retry attempts for data retrieval
@@ -317,7 +366,9 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     private long deviceMetaDataRetrievalTimeout = 60 * 1000 * 5;
 
     /**
-     * Device configuration retrieval timeout. The general devices list is retrieved once during this time period.
+     * Device configuration retrieval timeout. Each device's configuration is retrieved once during this time period.
+     * For large fleets set it high (e.g. 1 hour): configurations rarely change and cost one request per device,
+     * and changes made through the adapter's controls are applied to the cache right away.
      */
     private long deviceConfigurationRetrievalTimeout = 60 * 1000 / 2;
 
@@ -439,9 +490,6 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         aggregatedDeviceProcessor = new AggregatedDeviceProcessor(mapping);
         adapterProperties = new Properties();
         adapterProperties.load(getClass().getResourceAsStream("/version.properties"));
-
-        executorService = Executors.newFixedThreadPool(executorServiceThreadCount);
-        executorService.submit(deviceDataLoader = new WebExControlHubDeviceDataLoader());
     }
 
     /**
@@ -647,6 +695,25 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     }
 
     /**
+     * Retrieves {@link #requestsPerMinute}
+     *
+     * @return value of {@link #requestsPerMinute}
+     */
+    public int getRequestsPerMinute() {
+        return requestsPerMinute;
+    }
+
+    /**
+     * Sets {@link #requestsPerMinute} value
+     *
+     * @param requestsPerMinute new value of {@link #requestsPerMinute}, 0 or less disables pacing
+     */
+    public void setRequestsPerMinute(int requestsPerMinute) {
+        this.requestsPerMinute = requestsPerMinute;
+        requestRateLimiter.setRequestsPerMinute(requestsPerMinute);
+    }
+
+    /**
      * Retrieves {@link #requestRetryAttempts}
      *
      * @return value of {@link #requestRetryAttempts}
@@ -724,9 +791,20 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         adapterInitializationTimestamp = currentTimestamp;
         validRetrieveStatisticsTimestamp = System.currentTimeMillis();
         validDeviceMetaDataRetrievalPeriodTimestamp = currentTimestamp;
+        nextDevicesCollectionIterationTimestamp = 0L;
+        deviceListComplete = true;
 
         setBaseUri("v1");
         super.internalInit();
+
+        // Started here rather than in the constructor: internalDestroy() shuts the executor down,
+        // so a destroy followed by init must start collection again
+        if (executorService == null) {
+            executorService = Executors.newFixedThreadPool(executorServiceThreadCount);
+        }
+        if (deviceDataLoader == null) {
+            executorService.submit(deviceDataLoader = new WebExControlHubDeviceDataLoader());
+        }
     }
 
     @Override
@@ -744,6 +822,8 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             devicesExecutionPool.forEach(future -> future.cancel(true));
             devicesExecutionPool.clear();
             aggregatedDevices.clear();
+            validDeviceConfigurationRetrievalPeriodTimestamps.clear();
+            validDeviceStatusRetrievalPeriodTimestamps.clear();
 
             availablePropertyGroups.clear();
             controllablePropertiesToConfigurationNames.clear();
@@ -804,14 +884,30 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         Map<String, Object> configurationMap = new HashMap<>();
         configurationMap.put("op", "replace");
         configurationMap.put("path", configName + "/sources/configured/value");
+        Object newValue;
         if (value instanceof Number) {
-            configurationMap.put("value", Integer.parseInt(String.format("%.0f", value)));
+            newValue = Integer.parseInt(String.format("%.0f", value));
         } else {
-            configurationMap.put("value", String.valueOf(value));
+            newValue = String.valueOf(value);
         }
+        configurationMap.put("value", newValue);
 
         JsonNode response = doPatchWithTokenRefresh(Constants.URL.DEVICE_CONFIGURATIONS + deviceId, Collections.singletonList(configurationMap));
         response.asText();
+
+        // Configurations are re-read rarely (deviceConfigurationRetrievalTimeout), so reflect the change in the cache now
+        AggregatedDevice aggregatedDevice = aggregatedDevices.get(deviceId);
+        if (aggregatedDevice != null) {
+            String newValueText = String.valueOf(newValue);
+            aggregatedDevice.getProperties().put(propertyName, newValueText);
+            List<AdvancedControllableProperty> controls = aggregatedDevice.getControllableProperties();
+            if (controls != null) {
+                controls.stream().filter(control -> propertyName.equals(control.getName())).forEach(control -> {
+                    control.setValue(newValue);
+                    control.setTimestamp(new Date());
+                });
+            }
+        }
     }
 
     @Override
@@ -851,16 +947,10 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
 
     @Override
     public List<AggregatedDevice> retrieveMultipleStatistics() throws FailedLoginException {
+        // Only reads the cache: the devices list is collected by deviceDataLoader, which this call keeps active.
+        // Fetching the list here would block Symphony until every page is retrieved (minutes for large fleets).
+        // Credential rejections recorded by the loader are reported here.
         updateValidRetrieveStatisticsTimestamp();
-        if (aggregatedDevices.isEmpty() && !devicePaused) {
-            try {
-                fetchDevicesList();
-            } catch (FailedLoginException e) {
-                throw e;
-            } catch (Exception e) {
-                logger.warn("Unable to fetch devices list during retrieveMultipleStatistics", e);
-            }
-        }
         String failure = authenticationFailure;
         if (failure != null) {
             throw new FailedLoginException(failure);
@@ -885,9 +975,12 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         validDeviceMetaDataRetrievalPeriodTimestamp = currentTimestamp + deviceMetaDataRetrievalTimeout;
         List<AggregatedDevice> aggregatedDevicesList = listWebExDevices();
 
-        //If device is not in the list, provided by the server anymore - remove it from the cache
-        List<String> collectedDeviceIds = aggregatedDevicesList.stream().map(AggregatedDevice::getDeviceId).collect(toList());
-        aggregatedDevices.keySet().removeIf(deviceId -> !collectedDeviceIds.contains(deviceId));
+        //If device is not in the list, provided by the server anymore - remove it from the cache.
+        //Skipped when the listing stopped early, otherwise devices on the missing pages would be dropped.
+        if (deviceListComplete) {
+            Set<String> collectedDeviceIds = aggregatedDevicesList.stream().map(AggregatedDevice::getDeviceId).collect(Collectors.toSet());
+            aggregatedDevices.keySet().removeIf(deviceId -> !collectedDeviceIds.contains(deviceId));
+        }
 
         for(AggregatedDevice aggregatedDevice: aggregatedDevicesList) {
             String deviceId = aggregatedDevice.getDeviceId();
@@ -919,8 +1012,22 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     }
 
     @Override
-    protected void authenticate() throws Exception {
+    protected synchronized void authenticate() throws Exception {
         generateAccessToken();
+    }
+
+    /**
+     * Return the current access token, generating one first if there is none.
+     * Synchronized so that parallel requests generate the token once.
+     *
+     * @return access token
+     * @throws Exception if token generation fails
+     * */
+    private synchronized String obtainAccessToken() throws Exception {
+        if (StringUtils.isNullOrEmpty(accessToken)) {
+            generateAccessToken();
+        }
+        return accessToken;
     }
 
     /**
@@ -943,10 +1050,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     @Override
     protected HttpHeaders putExtraRequestHeaders(HttpMethod httpMethod, String uri, HttpHeaders headers) throws Exception {
         if (!uri.contains("access_token")) {
-            if (StringUtils.isNullOrEmpty(accessToken)) {
-                authenticate();
-            }
-            headers.add(Constants.Headers.AUTHORIZATION, "Bearer " + accessToken);
+            headers.add(Constants.Headers.AUTHORIZATION, "Bearer " + obtainAccessToken());
         }
         if (httpMethod == HttpMethod.PATCH) {
             // set() replaces every existing value; HttpHeaders.remove has different signatures in Spring 6 and 7
@@ -998,7 +1102,7 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
         deviceListUrl.append("start=%d&max=%d");
 
         List<AggregatedDevice> extractedDevices = new ArrayList<>();
-        listWebExDevices(extractedDevices, deviceListUrl.toString(), 0);
+        deviceListComplete = listWebExDevices(extractedDevices, deviceListUrl.toString());
 
         extractedDevices.forEach(aggregatedDevice -> {
             configureAggregatedDeviceCatalogData(aggregatedDevice);
@@ -1009,48 +1113,47 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
     }
 
     /**
-     * List WebEx devices, with pagination (start/max query string parameters). The method is called recursively
+     * List WebEx devices page by page, using the start (offset) and max (page size) query string parameters.
      *
      * @param aggregatedDevices list to add aggregated devices to
-     * @param baseUrl url to use for devices collection (with filters applied)
-     * @param start starting index for current request
+     * @param baseUrl url to use for devices collection (with filters applied), with start/max placeholders
+     * @return true if every page was retrieved, false if the listing stopped early because a page failed
      * */
-    private void listWebExDevices(List<AggregatedDevice> aggregatedDevices, String baseUrl, int start) throws Exception {
-        String url = String.format(baseUrl, start, start + deviceRetrievalPageSize);
-        JsonNode response = null;
-        int retries = 0;
-        while (retries++ < requestRetryAttempts) {
-            try {
-                response = doGetWithRetry(url, true);
-                break;
-            } catch (FailedLoginException e) {
-                throw e;
-            } catch (Exception e) {
-                Throwable rootCause = ExceptionUtils.getRootCause(e);
-                if (ExceptionUtils.hasCause(rootCause, RetryError.class)) {
-                    Long retryAfter = ((RetryError)rootCause).getRetryAfter();
-                    if (retryAfter != null) {
-                        TimeUnit.SECONDS.sleep(retryAfter);
-                        continue;
-                    }
-                }
-                break;
+    private boolean listWebExDevices(List<AggregatedDevice> aggregatedDevices, String baseUrl) throws Exception {
+        int pageSize = Math.max(1, Math.min(deviceRetrievalPageSize, MAX_DEVICE_RETRIEVAL_PAGE_SIZE));
+        int start = 0;
+        while (true) {
+            String url = String.format(baseUrl, start, pageSize);
+            JsonNode response = requestDevicesPage(url);
+            if (response == null) {
+                logger.warn(String.format("Unable to retrieve WebEx devices page %s, the devices list is incomplete: %d devices collected",
+                        url, aggregatedDevices.size()));
+                return false;
             }
-        }
+            aggregatedDevices.addAll(aggregatedDeviceProcessor.extractDevices(response));
 
-        if (response == null) {
-            throw new IllegalStateException("Unable to retrieve the WebEx devices list: " + url);
-        }
-        List<AggregatedDevice> extractedDevices = aggregatedDeviceProcessor.extractDevices(response);
-        aggregatedDevices.addAll(extractedDevices);
-
-        if (extractedDevices.size() < deviceRetrievalPageSize) {
-            if (logger.isDebugEnabled()) {
-                logger.debug("Last page of the output is reached, finishing collecting devices list");
+            // WebEx returns its own maximum when max is above it, so a page may hold fewer items than requested
+            // without being the last one: advance by the items actually returned and stop on an empty page.
+            int itemsReturned = response.at(Constants.Paths.ITEMS).size();
+            if (itemsReturned == 0) {
+                logDebugMessage("Last page of the output is reached, finishing collecting devices list");
+                return true;
             }
-        } else {
-            listWebExDevices(aggregatedDevices, baseUrl, start + deviceRetrievalPageSize + 1);
+            start += itemsReturned;
         }
+    }
+
+    /**
+     * Request one page of the devices list. 429 and Retry-After are handled by {@link #doGetWithRetry(String, boolean)};
+     * HTTP 401 and 403 on the devices list are credential rejections.
+     *
+     * @param url devices page url
+     * @return response body, or null if the page could not be retrieved
+     * @throws FailedLoginException if the credentials are rejected
+     * @throws Exception if interrupted while waiting for the request budget
+     * */
+    private JsonNode requestDevicesPage(String url) throws Exception {
+        return doGetWithRetry(url, true);
     }
 
     /**
@@ -1260,6 +1363,11 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                 deviceProperties.keySet().removeIf(s -> s.contains(Constants.PropertyNames.CONFIGURATION_GROUP));
             }
             JsonNode array = response.at(Constants.Paths.ITEMS);
+            if (array.isEmpty()) {
+                // Device has no configurations (e.g. a phone) - don't spend the request budget on it every cycle
+                validDeviceConfigurationRetrievalPeriodTimestamps.put(deviceId, currentTimestamp + NO_CONFIGURATION_RETRY_PERIOD);
+                return;
+            }
             array.fieldNames().forEachRemaining(configPropertyName -> {
                 JsonNode configValues = array.get(configPropertyName);
                 String source = configValues.at(Constants.Paths.SOURCE).asText();
@@ -1892,22 +2000,24 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
      *
      * @param url to retrieve data from
      * @return JsonNode response body, or null if the request failed
-     * @throws Exception if the credentials are rejected or the API asks to retry later
+     * @throws Exception if the credentials are rejected
      */
     private JsonNode doGetWithRetry(String url) throws Exception {
         return doGetWithRetry(url, false);
     }
 
     /**
-     * Retrieves data from the WebEx API.
+     * Retrieves data from the WebEx API. Every request is paced by {@link #requestRateLimiter}, shared by all
+     * collection threads.
      * <ul>
      *     <li>HTTP 401: in Integration mode the access token is refreshed and the request is repeated once. A
      *     rejection that persists, or a rejected token refresh, is recorded for {@link #retrieveMultipleStatistics()}
      *     and thrown as {@link FailedLoginException}.</li>
      *     <li>HTTP 403: recorded and thrown as {@link FailedLoginException} when {@code forbiddenIsLoginFailure} is
      *     set, otherwise logged and answered with null.</li>
-     *     <li>HTTP 429: the request is repeated, up to 10 attempts in total; a {@link RetryError} raised by
-     *     {@link WebExRequestInterceptor} is rethrown so the caller can wait for the Retry-After period.</li>
+     *     <li>HTTP 429: the Retry-After value (or {@link #DEFAULT_RETRY_AFTER_SECONDS} without one) pauses every
+     *     collection thread through the shared limiter, and the request is repeated, up to
+     *     {@link #requestRetryAttempts} attempts in total.</li>
      *     <li>Any other error is logged and answered with null.</li>
      * </ul>
      * A successful response clears the recorded credential rejection.
@@ -1915,12 +2025,14 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
      * @param url to retrieve data from
      * @param forbiddenIsLoginFailure true to report HTTP 403 as a credential rejection
      * @return JsonNode response body, or null if the request failed
-     * @throws Exception if the credentials are rejected or the API asks to retry later
+     * @throws Exception if the credentials are rejected, or interrupted while waiting for the request budget
      */
-    private synchronized JsonNode doGetWithRetry(String url, boolean forbiddenIsLoginFailure) throws Exception {
-        int retryAttempts = 0;
+    private JsonNode doGetWithRetry(String url, boolean forbiddenIsLoginFailure) throws Exception {
+        int attempts = Math.max(requestRetryAttempts, 1);
         boolean tokenRefreshed = false;
-        while (retryAttempts++ < 10 && !devicePaused) {
+        boolean rateLimited = false;
+        for (int attempt = 0; attempt < attempts && !devicePaused; attempt++) {
+            requestRateLimiter.acquire();
             String token = accessToken;
             try {
                 JsonNode response = doGet(url, JsonNode.class);
@@ -1937,6 +2049,9 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
             } catch (CommandFailureException e) {
                 int statusCode = e.getStatusCode();
                 if (statusCode == HttpStatus.TOO_MANY_REQUESTS.value()) {
+                    // 429 without a usable Retry-After header
+                    rateLimited = true;
+                    requestRateLimiter.pause(DEFAULT_RETRY_AFTER_SECONDS);
                     continue;
                 }
                 if (statusCode == HttpStatus.FORBIDDEN.value() && forbiddenIsLoginFailure) {
@@ -1947,15 +2062,22 @@ public class WebExControlHubAggregatorCommunicator extends RestCommunicator impl
                 logger.error(String.format("WebEx API error %s while retrieving %s data", statusCode, url), e);
                 return null;
             } catch (Exception e) {
-                Throwable rootCause = ExceptionUtils.getRootCause(e);
-                if (ExceptionUtils.hasCause(rootCause, RetryError.class)) {
-                    throw e;
+                int retryErrorIndex = ExceptionUtils.indexOfType(e, RetryError.class);
+                if (retryErrorIndex >= 0) {
+                    rateLimited = true;
+                    Long retryAfter = ((RetryError) ExceptionUtils.getThrowableList(e).get(retryErrorIndex)).getRetryAfter();
+                    logDebugMessage(String.format("WebEx API rate limit reached, pausing requests for %s seconds", retryAfter));
+                    requestRateLimiter.pause(retryAfter != null ? retryAfter : DEFAULT_RETRY_AFTER_SECONDS);
+                    continue;
                 }
                 if (!devicePaused) {
                     logger.error(String.format("WebEx API error while retrieving %s data", url), e);
                 }
                 return null;
             }
+        }
+        if (rateLimited && !devicePaused) {
+            logger.warn(String.format("WebEx API rate limit: %s still answered 429 after %d attempts", url, attempts));
         }
         return null;
     }
